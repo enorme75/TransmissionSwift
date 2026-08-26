@@ -59,6 +59,14 @@ struct MainToolbar: ToolbarContent {
             .help("Remove selected torrents")
             .accessibilityIdentifier("toolbar.remove")
         }
+        ToolbarItem(placement: .primaryAction) {
+            Button("Set Location", systemImage: "folder") {
+                store.openSetLocation(for: Array(store.selectedTorrentIDs))
+            }
+            .disabled(!store.actionsEnabled || store.selectedTorrentIDs.isEmpty)
+            .help("Set download location for selected torrents")
+            .accessibilityIdentifier("toolbar.setLocation")
+        }
 
         ToolbarSpacer(.flexible)
 

@@ -54,6 +54,7 @@ private struct StubSnapshotService: TorrentService {
     func setPriority(_ ids: [Torrent.ID], priority: TorrentPriority) async throws {}
     func setOptions(_ id: Torrent.ID, options: TorrentOptions) async throws {}
     func setLabels(_ ids: [Torrent.ID], labels: [String]) async throws {}
+    func setLocation(_ ids: [Torrent.ID], location: String, move: Bool) async throws {}
     func setAlternativeSpeedEnabled(_ enabled: Bool) async throws {}
     func isAlternativeSpeedEnabled() async -> Bool { false }
     func add(

@@ -172,6 +172,14 @@ public actor MockTorrentService: TorrentService {
         broadcast()
     }
 
+    public func setLocation(_ ids: [Torrent.ID], location: String, move: Bool) async throws {
+        let set = Set(ids)
+        for index in state.indices where set.contains(state[index].id) {
+            state[index].downloadFolder = location
+        }
+        broadcast()
+    }
+
     public func setAlternativeSpeedEnabled(_ enabled: Bool) async throws {
         altSpeed = enabled
         sessionSettingsValue.altSpeedEnabled = enabled

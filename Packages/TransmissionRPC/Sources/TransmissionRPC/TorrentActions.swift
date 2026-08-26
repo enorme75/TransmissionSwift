@@ -96,6 +96,30 @@ public struct TorrentSetArguments: Encodable, Sendable {
     }
 }
 
+// MARK: - torrent-set-location
+//
+// `location` is the new download path on the *daemon host*; `move` controls
+// whether Transmission relocates the existing data there (true) or merely
+// repoints the torrent when the data was moved out-of-band (false).
+
+public struct TorrentSetLocationArguments: Encodable, Sendable {
+    public var ids: [Int]
+    public var location: String
+    public var move: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case ids
+        case location
+        case move
+    }
+
+    public init(ids: [Int], location: String, move: Bool) {
+        self.ids = ids
+        self.location = location
+        self.move = move
+    }
+}
+
 // MARK: - torrent-add
 
 public struct TorrentAddArguments: Encodable, Sendable {

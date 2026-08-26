@@ -69,6 +69,13 @@ public protocol TorrentService: Sendable {
     /// set, it never appends.
     func setLabels(_ ids: [Torrent.ID], labels: [String]) async throws
 
+    /// Change the download location of one or more torrents on the daemon host.
+    /// `move == true` relocates the existing data to `location`; `move == false`
+    /// only repoints the torrent (for data moved out-of-band). Maps to RPC
+    /// `torrent-set-location`; the daemon treats the path as on its own host,
+    /// not the Mac running this app.
+    func setLocation(_ ids: [Torrent.ID], location: String, move: Bool) async throws
+
     /// Session-wide alt-speed (turtle) toggle. Reads/writes `session-set`'s
     /// `alt-speed-enabled` field.
     func setAlternativeSpeedEnabled(_ enabled: Bool) async throws

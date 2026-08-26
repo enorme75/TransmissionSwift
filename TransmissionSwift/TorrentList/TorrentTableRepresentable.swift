@@ -11,6 +11,7 @@ enum TorrentRowAction {
     case remove
     case removeAndDeleteData
     case editLabels
+    case setLocation
 }
 
 struct TorrentTableRepresentable: NSViewRepresentable {
@@ -326,6 +327,7 @@ struct TorrentTableRepresentable: NSViewRepresentable {
         private static let destructiveItemTag = 1
         private static let editLabelsItemTag = 2
         private static let openMappingItemTag = 3
+        private static let setLocationItemTag = 4
 
         /// Title + SF-symbol glyph for a torrent-priority context-menu item.
         /// Mirrors the priority column's glyphs (TorrentPriority.systemImage).
@@ -413,6 +415,9 @@ struct TorrentTableRepresentable: NSViewRepresentable {
             let editLabelsItem = item("Edit Labels…", "tag", .editLabels)
             editLabelsItem.tag = Self.editLabelsItemTag
             menu.addItem(editLabelsItem)
+            let setLocationItem = item("Set Location…", "folder", .setLocation)
+            setLocationItem.tag = Self.setLocationItemTag
+            menu.addItem(setLocationItem)
             menu.addItem(.separator())
             menu.addItem(destructiveItem("Remove\u{2026}", "trash", .remove))
             menu.addItem(
@@ -423,6 +428,8 @@ struct TorrentTableRepresentable: NSViewRepresentable {
                     menuItem.isEnabled = canAct && labelsSupported
                 case Self.openMappingItemTag:
                     menuItem.isEnabled = actionsEnabled && ids.count == 1
+                case Self.setLocationItemTag:
+                    menuItem.isEnabled = canAct
                 default:
                     menuItem.isEnabled = canAct
                 }

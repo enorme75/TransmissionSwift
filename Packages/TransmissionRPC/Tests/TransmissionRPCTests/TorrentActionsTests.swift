@@ -54,6 +54,32 @@ struct TorrentAddResponseTests {
     }
 }
 
+// MARK: - TorrentSetLocationArguments encode
+
+@Suite("TorrentSetLocationArguments encode")
+struct TorrentSetLocationArgumentsEncodeTests {
+    private func encoded(_ args: TorrentSetLocationArguments) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(args)
+        return try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    }
+
+    @Test("encodes ids, location, and move with correct keys")
+    func encodeAllFields() throws {
+        let args = TorrentSetLocationArguments(ids: [1, 2], location: "/data/torrents", move: true)
+        let json = try encoded(args)
+        #expect(json["ids"] as? [Int] == [1, 2])
+        #expect(json["location"] as? String == "/data/torrents")
+        #expect(json["move"] as? Bool == true)
+    }
+
+    @Test("move flag encodes as false when disabled")
+    func moveFlagFalse() throws {
+        let args = TorrentSetLocationArguments(ids: [9], location: "/x", move: false)
+        let json = try encoded(args)
+        #expect(json["move"] as? Bool == false)
+    }
+}
+
 // MARK: - TorrentSetArguments encode
 
 @Suite("TorrentSetArguments encode")

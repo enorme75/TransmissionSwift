@@ -216,6 +216,12 @@ public actor RPCTorrentService: TorrentService {
         await refreshAfterMutation()
     }
 
+    public func setLocation(_ ids: [Torrent.ID], location: String, move: Bool) async throws {
+        let args = TorrentSetLocationArguments(ids: ids, location: location, move: move)
+        try await client.torrentSetLocation(args)
+        await refreshAfterMutation()
+    }
+
     public func setAlternativeSpeedEnabled(_ enabled: Bool) async throws {
         try await client.sessionSet(SessionSetArguments(altSpeedEnabled: enabled))
     }

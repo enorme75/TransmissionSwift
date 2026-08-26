@@ -652,6 +652,7 @@ struct RPCTorrentServiceTests {
         {
             TorrentAddResponse(torrentAdded: nil, torrentDuplicate: nil)
         }
+        func torrentSetLocation(_ args: TorrentSetLocationArguments) async throws(TransmissionError) {}
         func sessionSet(_ args: SessionSetArguments) async throws(TransmissionError) {}
         func portTest() async throws(TransmissionError) -> Bool { true }
     }
@@ -764,6 +765,7 @@ struct RPCSetLabelsTests {
         }
 
         func sessionSet(_ args: SessionSetArguments) async throws(TransmissionError) {}
+        func torrentSetLocation(_ args: TorrentSetLocationArguments) async throws(TransmissionError) {}
         func portTest() async throws(TransmissionError) -> Bool { true }
     }
 

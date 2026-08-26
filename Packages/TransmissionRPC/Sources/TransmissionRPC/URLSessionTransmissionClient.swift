@@ -70,6 +70,10 @@ public actor URLSessionTransmissionClient: TransmissionClient {
         try await sendAction(method: "torrent-set", arguments: args)
     }
 
+    public func torrentSetLocation(_ args: TorrentSetLocationArguments) async throws(TransmissionError) {
+        try await sendAction(method: "torrent-set-location", arguments: args)
+    }
+
     public func torrentAdd(_ args: TorrentAddArguments) async throws(TransmissionError) -> TorrentAddResponse {
         try await send(method: "torrent-add", arguments: args)
     }

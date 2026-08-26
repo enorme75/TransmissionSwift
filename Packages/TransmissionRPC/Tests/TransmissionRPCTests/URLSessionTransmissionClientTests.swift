@@ -6,6 +6,24 @@ import Testing
 
 private let sessionIdHeader = "X-Transmission-Session-Id"
 
+/// URLSession hands a custom protocol the POST body as an `InputStream`
+/// (`httpBodyStream`), not `httpBody`, so read whichever is present.
+private func requestBodyData(_ request: URLRequest) -> Data? {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return nil }
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 1024)
+    defer { buffer.deallocate() }
+    while stream.hasBytesAvailable {
+        let read = stream.read(buffer, maxLength: 1024)
+        if read <= 0 { break }
+        data.append(buffer, count: read)
+    }
+    return data
+}
+
 /// Real `session-get` response captured from transmission-daemon 4.1.2
 /// (see Fixtures/ — recapture with curl if the daemon version changes).
 private func successFixture() throws -> Data {
@@ -25,6 +43,28 @@ private func makeClient(host: String, credentials: Credentials? = nil) -> URLSes
 
 @Suite("URLSessionTransmissionClient")
 struct URLSessionTransmissionClientTests {
+
+    @Test("torrentSetLocation sends the method and arguments")
+    func torrentSetLocation() async throws {
+        let host = "set-location.test"
+        let recorded = Mutex<Data?>(nil)
+        let body = Data(#"{"result":"success","arguments":{}}"#.utf8)
+        StubURLProtocol.register(host: host) { request in
+            recorded.withLock { $0 = requestBodyData(request) }
+            return (makeHTTPResponse(url: request.url!, statusCode: 200), body)
+        }
+
+        try await makeClient(host: host).torrentSetLocation(
+            TorrentSetLocationArguments(ids: [1, 2], location: "/data/torrents", move: true))
+
+        let requestBody = try #require(recorded.withLock { $0 })
+        let envelope = try JSONSerialization.jsonObject(with: requestBody) as! [String: Any]
+        #expect(envelope["method"] as? String == "torrent-set-location")
+        let arguments = try #require(envelope["arguments"] as? [String: Any])
+        #expect(arguments["ids"] as? [Int] == [1, 2])
+        #expect(arguments["location"] as? String == "/data/torrents")
+        #expect(arguments["move"] as? Bool == true)
+    }
 
     @Test("sessionGet decodes version fields on 200")
     func happyPath() async throws {

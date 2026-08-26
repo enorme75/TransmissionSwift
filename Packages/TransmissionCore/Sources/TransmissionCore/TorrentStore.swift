@@ -103,6 +103,10 @@ public final class TorrentStore {
     public var showEditLabels: Bool = false
     public var editLabelsTargetIDs: [Torrent.ID] = []
 
+    // Set-location popup
+    public var showSetLocation: Bool = false
+    public var setLocationTargetIDs: [Torrent.ID] = []
+
     public private(set) var facets = FilterFacets(torrents: [])
     public private(set) var visibleTorrents: [Torrent] = []
 
@@ -481,6 +485,20 @@ public final class TorrentStore {
         guard actionsEnabled, supportsLabels, !ids.isEmpty else { return }
         editLabelsTargetIDs = ids
         showEditLabels = true
+    }
+
+    public func openSetLocation(for ids: [Torrent.ID]) {
+        guard actionsEnabled, !ids.isEmpty else { return }
+        setLocationTargetIDs = ids
+        showSetLocation = true
+    }
+
+    public func setLocation(_ ids: [Torrent.ID], location: String, move: Bool) async {
+        do {
+            try await service.setLocation(ids, location: location, move: move)
+        } catch {
+            recordError(error)
+        }
     }
 
     public func add(

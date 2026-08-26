@@ -36,6 +36,8 @@ struct TorrentListView: View {
                         await store.remove(ids, deleteLocalData: true)
                     case .editLabels:
                         store.openEditLabels(for: ids)
+                    case .setLocation:
+                        store.openSetLocation(for: ids)
                     }
                 }
             },

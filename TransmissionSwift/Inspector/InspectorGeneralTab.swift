@@ -101,12 +101,39 @@ struct InspectorGeneralTab: View {
                 .font(.headline)
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                row("Location", torrent.downloadFolder, monospaced: true)
+                locationRow
                 labelsRow
                 priorityRow
                 trackerRow
             }
             .font(.callout)
+        }
+    }
+
+    private var locationRow: some View {
+        GridRow {
+            Text("Location")
+                .foregroundStyle(.secondary)
+                .gridColumnAlignment(.trailing)
+            HStack(spacing: 4) {
+                Text(torrent.downloadFolder)
+                    .font(.callout.monospaced())
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if store.actionsEnabled {
+                    Spacer()
+                    Button("Set Location…") {
+                        store.openSetLocation(for: [torrent.id])
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .accessibilityLabel("Set location")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

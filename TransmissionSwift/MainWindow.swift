@@ -71,6 +71,12 @@ struct MainWindow: View {
                 ids: store.editLabelsTargetIDs
             )
         }
+        .sheet(isPresented: $store.showSetLocation) {
+            SetLocationSheet(
+                isPresented: $store.showSetLocation,
+                ids: store.setLocationTargetIDs
+            )
+        }
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first else { return false }
             let accepted = url.pathExtension == "torrent" || url.scheme == "magnet"
