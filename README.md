@@ -18,6 +18,8 @@ This app lets you connect to a remote Transmission instance over RPC.
   - Delete, with or without data
   - Verify
   - Update tracker
+  - Set priority, set files as unwanted
+  - Change download location
 - Add new torrents
   - via .torrent files (drag+drop, or register handler for .torrent files)
   - magnets links via UI
@@ -35,24 +37,28 @@ It is written in Swift and SwiftUI, zipping down to a ~4MB app with minimal reso
 
 ![image](imgs/main.png)
 
-## How to use it
+## How to open it it
 
-- [Download latest unsigned prerelease](https://github.com/jvacek/TransmissionSwift/releases)
-- Find in your downloads, and unzip
-- Try to open the unsigned app (it will fail)
-- Follow [instructions here](https://github.com/jvacek/TransmissionSwift/releases)
-to bypass the verification
-- Open again
+1. [Download latest unsigned release](https://github.com/jvacek/TransmissionSwift/releases)
+2. Find in your downloads, and unzip
+3. Try to open the unsigned app (it will fail). **Do not move to trash**, just
+4. Follow [instructions here](https://support.apple.com/en-gb/guide/mac-help/mh40616/mac) to bypass the verification (duplicated below for the lazy)
+    > 1. On your Mac, choose Apple menu > System Settings, then click Privacy & Security in the sidebar. (You may need to scroll down.)
+    > 2. Go to Security, then click Open.
+    > 3. Click Open Anyway.
+    >    This button is available for about an hour after you try to open the app.
+    > 4. Enter your login password, then click OK.
+5. Open again
 
 Alternatively, you can open the project in Xcode and build it from there.
 
 ## What doesn't work yet
+
 - Changing server settings from the settings page
 
 ## What's being planned
 
 1. Separate polling loop for active torrents
-1. Setting priorities for torrents and for files
 1. iCloud Sync for settings
 1. iPhone Version
 
