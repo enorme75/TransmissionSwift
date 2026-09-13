@@ -50,6 +50,7 @@ It is written in Swift and SwiftUI, zipping down to a ~4MB app with minimal reso
     <details>
     <summary>Screenshot + Instructions</summary>
     <img src="imgs/security_bypass/step2.png" width="600">
+
     > 1. On your Mac, choose Apple menu > System Settings, then click Privacy & Security in the sidebar. (You may need to scroll down.)
     > 2. Go to Security, then click Open.
     > 3. Click Open Anyway.
