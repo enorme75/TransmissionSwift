@@ -116,12 +116,13 @@ struct InspectorGeneralTab: View {
                 .foregroundStyle(.secondary)
                 .gridColumnAlignment(.trailing)
             HStack(spacing: 4) {
-                Text(torrent.downloadFolder)
+                Text(locationDisplay)
                     .font(.callout.monospaced())
                     .monospacedDigit()
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+                    .help(torrent.downloadFolder)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if store.actionsEnabled {
                     Spacer()
@@ -135,6 +136,14 @@ struct InspectorGeneralTab: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Shown relative to the daemon's default download dir when nested inside
+    /// it, otherwise the full path (e.g. a folder outside the download root).
+    private var locationDisplay: String {
+        let relative = relativeDownloadFolder(torrent.downloadFolder, relativeTo: store.downloadDirectory)
+        if relative.isEmpty { return store.downloadDirectory ?? torrent.downloadFolder }
+        return relative
     }
 
     private var statusBadge: some View {

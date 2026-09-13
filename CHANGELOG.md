@@ -4,7 +4,8 @@ All notable changes to TransmissionSwift.
 
 ## 0.5.2
 
-- Add "Set Location" to change a torrent's download location on the daemon (single + bulk via the table context menu, inspector, and toolbar), with a "Move data" option
+- Add "Set Location" to change a torrent's download location on the daemon (single + bulk via the table context menu, inspector, and toolbar), with a "Move data" option and a full-path preview
+- Paths in "Set Location" are relative to the daemon's default download dir (or absolute from `/`); `..`/`.` are resolved, and known folders are suggested
 - Add favicons to tracker inspector
 - Wire up the RPC for comment, creator, dateCreated, isPrivate, downloadedEver, uploadedEver, activityDate, magnetLink.
 - Add the above to the torrent inspector
