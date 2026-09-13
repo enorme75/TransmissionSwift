@@ -2,6 +2,10 @@
 
 All notable changes to TransmissionSwift.
 
+## 0.5.3
+
+- Fix the signature of the thinned ARM-only release
+
 ## 0.5.2
 
 - Add "Set Location" to change a torrent's download location on the daemon (single + bulk via the table context menu, inspector, and toolbar), with a "Move data" option and a full-path preview

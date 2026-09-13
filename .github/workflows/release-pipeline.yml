@@ -121,37 +121,7 @@ jobs:
       - name: Install xcbeautify
         run: brew install xcbeautify
 
-      - name: Build arm64-only app
-        run: |
-          set -euo pipefail
-          set -o pipefail
-
-          xcodebuild \
-            -project TransmissionSwift.xcodeproj \
-            -scheme TransmissionSwift \
-            -configuration Release \
-            -destination 'platform=macOS' \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=NO \
-            CURRENT_PROJECT_VERSION="$RELEASE_BUILD_VERSION" \
-            $BUILD_EXTRA_FLAGS \
-            build | xcbeautify --renderer github-actions
-
-      - name: Zip arm64 bundle
-        run: |
-          set -euo pipefail
-
-          app_path="build/DerivedData/Build/Products/Release/TransmissionSwift.app"
-          if [ ! -d "$app_path" ]; then
-            echo "Expected arm64 app bundle not found at ${app_path}."
-            exit 1
-          fi
-
-          ditto -c -k --keepParent "$app_path" "$ZIP_PATH_ARM64"
-
-      - name: Build universal app (reuses arm64 cache)
+      - name: Build universal app
         run: |
           set -euo pipefail
           set -o pipefail
@@ -168,7 +138,7 @@ jobs:
             $BUILD_EXTRA_FLAGS \
             build | xcbeautify --renderer github-actions
 
-      - name: Zip universal bundle
+      - name: Sign, thin and zip bundles
         run: |
           set -euo pipefail
 
@@ -178,7 +148,70 @@ jobs:
             exit 1
           fi
 
+          # Release sandbox entitlements. The Release config derives these from
+          # build settings at sign time (ENABLE_APP_SANDBOX etc.), but signing
+          # is disabled above (no certs on CI), so embed the equivalent set
+          # explicitly when ad-hoc signing. Mirrors the Debug entitlements
+          # minus Debug-only keys (get-task-allow, / read exception).
+          cat > build/Release.entitlements <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.security.app-sandbox</key>
+              <true/>
+              <key>com.apple.security.files.downloads.read-only</key>
+              <true/>
+              <key>com.apple.security.files.user-selected.read-write</key>
+              <true/>
+              <key>com.apple.security.network.client</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          # Seals a bundle: re-seal nested code inside-out first (the embedded
+          # Sparkle framework ships a stale upstream seal — Xcode strips files
+          # like PrivateHeaders at copy time, so its seal no longer matches
+          # disk), then seal the outer app with the sandbox entitlements.
+          # Without this the bundle has no _CodeSignature while the binary
+          # carries a linker ad-hoc signature demanding sealed resources, and
+          # Gatekeeper reports the app as damaged. The trailing verify is a
+          # tripwire: it fails the run instead of shipping another damaged zip.
+          seal_bundle() {
+            local bundle="$1"
+            find "$bundle" \( -name '*.app' -o -name '*.framework' -o -name '*.xpc' \) \
+              | sort -r \
+              | while IFS= read -r nested; do
+                if [ "$nested" != "$bundle" ]; then
+                  codesign --force --sign - --preserve-metadata=entitlements "$nested"
+                fi
+              done
+            codesign --force --sign - --entitlements build/Release.entitlements "$bundle"
+            codesign --verify --deep --strict --verbose=2 "$bundle"
+          }
+
+          # Universal zip, straight from the build.
+          seal_bundle "$app_path"
           ditto -c -k --keepParent "$app_path" "$ZIP_PATH"
+
+          # Arm64-only zip, thinned from the universal bundle so both zips
+          # share the identical arm64 slice (one compile, no two-build drift).
+          # Thinning invalidates binary signatures, so re-sign each thinned
+          # binary (keeping its entitlements) before re-sealing the bundle.
+          mkdir -p build/arm64
+          cp -R "$app_path" build/arm64/
+          arm_app="build/arm64/TransmissionSwift.app"
+          find "$arm_app" -type f -perm +111 | while IFS= read -r f; do
+            if lipo -info "$f" 2>/dev/null | grep -q "Architectures in the fat file"; then
+              thin_out="$f.thin"
+              lipo "$f" -thin arm64 -output "$thin_out" && mv "$thin_out" "$f"
+              codesign --force --sign - --preserve-metadata=entitlements "$f"
+            fi
+          done
+          seal_bundle "$arm_app"
+          lipo -info "$arm_app/Contents/MacOS/TransmissionSwift"
+          ditto -c -k --keepParent "$arm_app" "$ZIP_PATH_ARM64"
 
       - name: Install Sparkle tools
         run: |
