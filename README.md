@@ -13,6 +13,9 @@
 
 This app lets you connect to a remote Transmission instance over RPC.
 
+<details>
+<summary>Features</summary>
+
 - Manage active torrents
   - Start/pause
   - Delete, with or without data
@@ -32,6 +35,8 @@ This app lets you connect to a remote Transmission instance over RPC.
 - Path mapping via custom URI patterns, open your files with whatever app you want
   - A few ready presets to open in Cyberduck, reveal in Finder (mounted or not), Open in default app, View in Swizzin web
 - App self-updating via Sparkle
+
+</details>
 
 It is written in Swift and SwiftUI, zipping down to a ~4MB app with minimal resource use.
 
