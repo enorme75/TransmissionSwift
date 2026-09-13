@@ -40,13 +40,13 @@ It is written in Swift and SwiftUI, zipping down to a ~4MB app with minimal reso
 ## How to open it it
 
 1. [Download latest unsigned release](https://github.com/jvacek/TransmissionSwift/releases)
-2. Find in your downloads, and unzip
-3. Try to open the unsigned app (it will fail). **Do not move to trash**, just select "Done"
+1. Find in your downloads, and unzip
+1. Try to open the unsigned app (it will fail). **Do not move to trash**, just select "Done"
     <details>
     <summary>Screenshot</summary>
     <img src="imgs/security_bypass/step1.png" width="600">
     </details>
-4. Follow [instructions here](https://support.apple.com/en-gb/guide/mac-help/mh40616/mac) to bypass the verification (duplicated below for the lazy)
+1. Follow [instructions here](https://support.apple.com/en-gb/guide/mac-help/mh40616/mac) to bypass the verification (duplicated below for the lazy)
     <details>
     <summary>Screenshot + Instructions</summary>
     <img src="imgs/security_bypass/step2.png" width="600">
@@ -57,7 +57,7 @@ It is written in Swift and SwiftUI, zipping down to a ~4MB app with minimal reso
     >    This button is available for about an hour after you try to open the app.
     > 4. Enter your login password, then click OK.
     </details>
-5. Open again
+1. Open again
 
 Alternatively, you can open the project in Xcode and build it from there.
 
