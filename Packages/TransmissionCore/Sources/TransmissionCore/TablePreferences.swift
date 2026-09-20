@@ -40,7 +40,7 @@ extension TableColumn {
         case .eta: return KeyPathComparator(\Torrent.etaSortKey, order: order)
         case .ratio: return KeyPathComparator(\Torrent.ratio, order: order)
         case .addedAt: return KeyPathComparator(\Torrent.addedAt, order: order)
-        case .activityAt: return KeyPathComparator(\Torrent.activityAt, order: order)
+        case .activityAt: return KeyPathComparator(\Torrent.lastActivityAt, order: order)
         case .primaryTracker: return KeyPathComparator(\Torrent.primaryTracker, order: order)
         case .connectedPeers: return KeyPathComparator(\Torrent.connectedPeerCount, order: order)
         case .availablePeers: return KeyPathComparator(\Torrent.availablePeerCount, order: order)

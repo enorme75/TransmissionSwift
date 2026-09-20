@@ -130,7 +130,7 @@ extension TorrentGetResponse {
         "peersConnected", "peersSendingToUs", "peersGettingFromUs", "peersFrom",
         "eta", "uploadRatio",
         "downloadDir", "addedDate",
-        "labels", "bandwidthPriority",
+        "labels", "bandwidthPriority", "activityDate",
         "pieceCount", "pieceSize", "haveValid",
         "queuePosition", "trackers", "trackerStats",
     ]

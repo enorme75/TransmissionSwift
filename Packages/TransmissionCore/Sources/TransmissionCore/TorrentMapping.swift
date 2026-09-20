@@ -212,10 +212,9 @@ extension Torrent {
             isPrivate: wire.isPrivate ?? false,
             downloadedEver: wire.downloadedEver ?? 0,
             uploadedEver: wire.uploadedEver ?? 0,
-            lastActivityAt: {
-                guard let seconds = wire.activityDate, seconds > 0 else { return nil }
-                return Date(timeIntervalSince1970: TimeInterval(seconds))
-            }(),
+            lastActivityAt: wire.activityDate.flatMap { value in
+                value > 0 ? Date(timeIntervalSince1970: TimeInterval(value)) : nil
+            },
             magnetLink: wire.magnetLink.flatMap { $0.isEmpty ? nil : $0 }
         )
     }
