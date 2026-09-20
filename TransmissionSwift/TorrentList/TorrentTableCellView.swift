@@ -35,6 +35,7 @@ struct TorrentRowDisplay: Equatable {
             && lhs.torrent.primaryTracker == rhs.torrent.primaryTracker
             && lhs.torrent.downloadFolder == rhs.torrent.downloadFolder
             && lhs.torrent.addedAt == rhs.torrent.addedAt
+            && lhs.torrent.activityAt == rhs.torrent.activityAt
             && lhs.torrent.labels == rhs.torrent.labels
             && lhs.torrent.priority == rhs.torrent.priority
             && lhs.torrent.pieces == rhs.torrent.pieces
@@ -184,6 +185,16 @@ extension TorrentCellContent {
                 alignment: .right,
                 toolTip: row.torrent.addedAt.formatted(date: .abbreviated, time: .complete),
                 accessibilityLabel: row.torrent.addedAt.formatted(date: .abbreviated, time: .shortened))
+        case .activityAt:
+            let text = ColumnFormatters.relativeDate(row.torrent.activityAt)
+            return TorrentCellContent(
+                shape: .text,
+                text: text,
+                font: monoDigitFont,
+                color: .secondaryLabelColor,
+                alignment: .right,
+                toolTip: row.torrent.activityAt.formatted(date: .abbreviated, time: .complete),
+                accessibilityLabel: row.torrent.activityAt.formatted(date: .abbreviated, time: .shortened))
         case .primaryTracker:
             if row.torrent.primaryTracker.isEmpty {
                 return TorrentCellContent(
