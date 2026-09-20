@@ -9,6 +9,7 @@ public enum TableColumn: String, CaseIterable, Identifiable, Hashable, Sendable,
     case eta
     case ratio
     case addedAt
+    case activityAt
     case primaryTracker
     case connectedPeers
     case availablePeers
