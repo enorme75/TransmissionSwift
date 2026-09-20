@@ -41,6 +41,9 @@ enum TorrentTableColumns {
             column: .addedAt, title: "Added",
             minWidth: 72, idealWidth: 100, maxWidth: 150, hiddenByDefault: false),
         TorrentTableColumnSpec(
+            column: .activityAt, title: "Activity",
+            minWidth: 72, idealWidth: 100, maxWidth: 150, hiddenByDefault: false),
+        TorrentTableColumnSpec(
             column: .primaryTracker, title: "Tracker",
             minWidth: 80, idealWidth: 120, maxWidth: 200, hiddenByDefault: false),
         TorrentTableColumnSpec(
