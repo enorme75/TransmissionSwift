@@ -23,13 +23,9 @@ struct TorrentTableRepresentable: NSViewRepresentable {
     var onSortChange: ((TransmissionCore.TableColumn, Bool) -> Void)?
     var actionsEnabled: Bool
     var labelsSupported: Bool = true
-    /// Local tag→colour assignments (TagColorStore). External to the torrent
-    /// rows, so a change forces a visible-cell refresh rather than riding the
-    /// row poll guard.
     var tagColors: [String: TagColor] = [:]
     var onRowAction: ((TorrentRowAction, [Torrent.ID]) -> Void)?
     var onInspectorRequest: (() -> Void)?
-    /// Per-server "Open with…" entries (see `OpenMapping`).
     var mappings: [OpenMapping] = []
     var onOpenMapping: ((OpenMapping, [Torrent.ID]) -> Void)?
 
@@ -88,7 +84,10 @@ struct TorrentTableRepresentable: NSViewRepresentable {
 
         coordinator.configure(
             downloadDirectoryBase: downloadDirectoryBase,
-            sortState: Coordinator.SortState(columnID: sortColumnID, ascending: sortAscending),
+            sortState: Coordinator.SortState(
+                columnID: sortColumnID,
+                ascending: sortAscending
+            ),
             actionsEnabled: actionsEnabled,
             labelsSupported: labelsSupported,
             tagColors: tagColors,
@@ -96,7 +95,8 @@ struct TorrentTableRepresentable: NSViewRepresentable {
             onRowAction: onRowAction,
             onInspectorRequest: onInspectorRequest,
             mappings: mappings,
-            onOpenMapping: onOpenMapping)
+            onOpenMapping: onOpenMapping
+        )
         tableView.dataSource = coordinator
         tableView.delegate = coordinator
         tableView.target = coordinator
@@ -122,7 +122,10 @@ struct TorrentTableRepresentable: NSViewRepresentable {
         coordinator.updateSelectionBinding($selection)
         coordinator.configure(
             downloadDirectoryBase: downloadDirectoryBase,
-            sortState: Coordinator.SortState(columnID: sortColumnID, ascending: sortAscending),
+            sortState: Coordinator.SortState(
+                columnID: sortColumnID,
+                ascending: sortAscending
+            ),
             actionsEnabled: actionsEnabled,
             labelsSupported: labelsSupported,
             tagColors: tagColors,
@@ -130,7 +133,8 @@ struct TorrentTableRepresentable: NSViewRepresentable {
             onRowAction: onRowAction,
             onInspectorRequest: onInspectorRequest,
             mappings: mappings,
-            onOpenMapping: onOpenMapping)
+            onOpenMapping: onOpenMapping
+        )
         // Indicators before rows: the header reacts on the same frame as the
         // click, even if the row reload takes an extra layout pass.
         coordinator.syncSortIndicator()
@@ -273,6 +277,7 @@ struct TorrentTableRepresentable: NSViewRepresentable {
                 tableView.sortDescriptors = []
             }
         }
+        
 
         // MARK: - Row context menu & interaction
 
@@ -542,20 +547,34 @@ extension TorrentTableRepresentable.Coordinator: NSTableViewDelegate {
         guard displayedRows.indices.contains(row), let tableColumn,
             let column = TransmissionCore.TableColumn(rawValue: tableColumn.identifier.rawValue)
         else { return nil }
+
         let reuseID = NSUserInterfaceItemIdentifier(
-            TorrentTableColumns.cellReuseIdentifierPrefix + column.rawValue)
+            TorrentTableColumns.cellReuseIdentifierPrefix + column.rawValue
+        )
+
         let cell =
             tableView.makeView(withIdentifier: reuseID, owner: self) as? TorrentTableCellView
             ?? TorrentTableCellView()
+
         cell.identifier = reuseID
         cell.configure(
             content: TorrentCellContent.make(
                 for: column,
                 row: displayedRows[row],
                 downloadDirectoryBase: downloadDirectoryBase,
-                tagColors: tagColors))
+                tagColors: tagColors
+            )
+        )
         return cell
     }
+
+    func tableView(
+        _ tableView: NSTableView,
+        userCanChangeVisibilityOf column: NSTableColumn
+    ) -> Bool {
+        true
+    }
+
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard let tableView else { return }
@@ -590,12 +609,6 @@ extension TorrentTableRepresentable.Coordinator: NSTableViewDelegate {
             let column = TransmissionCore.TableColumn(rawValue: key)
         else { return }
         onSortChange?(column, descriptor.ascending)
-    }
-
-    func tableView(_ tableView: NSTableView, userCanChangeVisibilityOf column: NSTableColumn) -> Bool {
-        // Enables the native header checkmark menu for hide/show. Autosave
-        // persists each column's isHidden state under `autosaveName`.
-        true
     }
 }
 

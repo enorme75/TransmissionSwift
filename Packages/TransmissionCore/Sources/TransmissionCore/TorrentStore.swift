@@ -134,6 +134,12 @@ public final class TorrentStore {
         prefs.sortAscending = ascending
         tablePreferences = prefs
     }
+    
+    private func updateVisibleColumns(_ columns: [TableColumn.ID]) {
+        var prefs = tablePreferences
+        prefs.visibleColumns = columns
+        tablePreferences = prefs
+    }
 
     public var selectedTorrents: [Torrent] {
         torrents.filter { selectedTorrentIDs.contains($0.id) }
@@ -171,6 +177,10 @@ public final class TorrentStore {
     public init(service: any TorrentService) {
         self.service = service
         self.actionsEnabled = service.supportsActions
+        
+        let prefs = tablePreferences
+        self.sortColumn = TableColumn(rawValue: prefs.sortColumn) ?? .name
+        self.sortAscending = prefs.sortAscending
         startStream()
     }
 
@@ -263,6 +273,12 @@ public final class TorrentStore {
         sortAscending = ascending
         updateSortOrder(column: column.rawValue, ascending: ascending)
         rebuildVisibleTorrents()
+    }
+    
+    public func setVisibleColumns(_ columns: [TableColumn]) {
+        let ids = columns.map(\.rawValue)
+        guard tablePreferences.visibleColumns != ids else { return }
+        updateVisibleColumns(ids)
     }
 
     private func startStream() {

@@ -60,12 +60,32 @@ extension TableColumn {
 public struct TablePreferences: Codable, Sendable {
     public var sortColumn: String
     public var sortAscending: Bool
+    public var visibleColumns: [String]
+    
+    public static let storageKey = "torrentTablePreferences"
 
     public init(
         sortColumn: String = "name",
-        sortAscending: Bool = true
+        sortAscending: Bool = true,
+        visibleColumns: [String] = []
     ) {
         self.sortColumn = sortColumn
         self.sortAscending = sortAscending
+        self.visibleColumns = visibleColumns
+    }
+    public struct TablePreferences: Codable, Sendable {
+        public var sortColumn: String
+        public var sortAscending: Bool
+        public var visibleColumns: [String]
+
+        public init(
+            sortColumn: String = "name",
+            sortAscending: Bool = true,
+            visibleColumns: [String] = []
+        ) {
+            self.sortColumn = sortColumn
+            self.sortAscending = sortAscending
+            self.visibleColumns = visibleColumns
+        }
     }
 }
