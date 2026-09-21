@@ -32,6 +32,7 @@ struct TorrentRowDisplay: Equatable {
             && lhs.torrent.seedCount == rhs.torrent.seedCount
             && lhs.torrent.eta == rhs.torrent.eta
             && lhs.torrent.ratio == rhs.torrent.ratio
+            && lhs.torrent.uploadedEver == rhs.torrent.uploadedEver
             && lhs.torrent.primaryTracker == rhs.torrent.primaryTracker
             && lhs.torrent.downloadFolder == rhs.torrent.downloadFolder
             && lhs.torrent.addedAt == rhs.torrent.addedAt
@@ -172,6 +173,16 @@ extension TorrentCellContent {
                 text: text,
                 font: monoDigitFont,
                 color: color,
+                alignment: .right,
+                toolTip: nil,
+                accessibilityLabel: text)
+        case .sent:
+            let text = ColumnFormatters.humanizedSize(row.torrent.uploadedEver)
+            return TorrentCellContent(
+                shape: .text,
+                text: text,
+                font: monoDigitFont,
+                color: .secondaryLabelColor,
                 alignment: .right,
                 toolTip: nil,
                 accessibilityLabel: text)

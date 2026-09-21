@@ -38,6 +38,9 @@ enum TorrentTableColumns {
             column: .ratio, title: "Ratio",
             minWidth: 50, idealWidth: 60, maxWidth: 90, hiddenByDefault: false),
         TorrentTableColumnSpec(
+            column: .sent, title: "Sent",
+            minWidth: 70, idealWidth: 95, maxWidth: 130, hiddenByDefault: false),
+        TorrentTableColumnSpec(
             column: .addedAt, title: "Added",
             minWidth: 72, idealWidth: 100, maxWidth: 150, hiddenByDefault: false),
         TorrentTableColumnSpec(
