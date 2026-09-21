@@ -97,6 +97,12 @@ extension TorrentCellContent {
     private static let captionMonoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
     private static let caption2Font = NSFont.systemFont(ofSize: 10)
     private static let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private static let addedDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "dd/MM/yyyy"
+        return formatter
+    }()
 
     /// Builds the display value for `column` of `row`, folding the former
     /// `view(for:)` + `axLabel(for:)` into one place so they can't diverge.
@@ -187,15 +193,16 @@ extension TorrentCellContent {
                 toolTip: nil,
                 accessibilityLabel: text)
         case .addedAt:
-            let text = ColumnFormatters.relativeDate(row.torrent.addedAt)
+            let date = row.torrent.addedAt
+            let text = Self.addedDateFormatter.string(from: date)
             return TorrentCellContent(
                 shape: .text,
                 text: text,
                 font: monoDigitFont,
                 color: .secondaryLabelColor,
                 alignment: .right,
-                toolTip: row.torrent.addedAt.formatted(date: .abbreviated, time: .complete),
-                accessibilityLabel: row.torrent.addedAt.formatted(date: .abbreviated, time: .shortened))
+                toolTip: text,
+                accessibilityLabel: text)
         case .activityAt:
             let text = if let date = row.torrent.lastActivityAt {
                 date.formatted(.relative(presentation: .named))
