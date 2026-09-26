@@ -20,7 +20,12 @@ struct TorrentTableRepresentable: NSViewRepresentable {
     var downloadDirectoryBase: String?
     var sortColumnID: String?
     var sortAscending: Bool
+    var columnOrderIDs: [String] = []
+    var columnWidths: [String: Double] = [:]
     var onSortChange: ((TransmissionCore.TableColumn, Bool) -> Void)?
+    var onColumnOrderChange: (([TransmissionCore.TableColumn]) -> Void)?
+    var onColumnWidthsChange: (([String: Double]) -> Void)?
+    var onVisibleColumnsChange: (([String]) -> Void)?
     var actionsEnabled: Bool
     var labelsSupported: Bool = true
     var tagColors: [String: TagColor] = [:]
@@ -28,6 +33,7 @@ struct TorrentTableRepresentable: NSViewRepresentable {
     var onInspectorRequest: (() -> Void)?
     var mappings: [OpenMapping] = []
     var onOpenMapping: ((OpenMapping, [Torrent.ID]) -> Void)?
+    var visibleColumnIDs: Set<String> = []
 
     func makeCoordinator() -> Coordinator {
         Coordinator(selection: $selection)
@@ -88,10 +94,16 @@ struct TorrentTableRepresentable: NSViewRepresentable {
                 columnID: sortColumnID,
                 ascending: sortAscending
             ),
+            columnOrderIDs: columnOrderIDs,
+            columnWidths: columnWidths,
+            visibleColumnIDs: visibleColumnIDs,
             actionsEnabled: actionsEnabled,
             labelsSupported: labelsSupported,
             tagColors: tagColors,
             onSortChange: onSortChange,
+            onColumnOrderChange: onColumnOrderChange,
+            onColumnWidthsChange: onColumnWidthsChange,
+            onVisibleColumnsChange: onVisibleColumnsChange,
             onRowAction: onRowAction,
             onInspectorRequest: onInspectorRequest,
             mappings: mappings,
@@ -126,10 +138,16 @@ struct TorrentTableRepresentable: NSViewRepresentable {
                 columnID: sortColumnID,
                 ascending: sortAscending
             ),
+            columnOrderIDs: columnOrderIDs,
+            columnWidths: columnWidths,
+            visibleColumnIDs: visibleColumnIDs,
             actionsEnabled: actionsEnabled,
             labelsSupported: labelsSupported,
             tagColors: tagColors,
             onSortChange: onSortChange,
+            onColumnOrderChange: onColumnOrderChange,
+            onColumnWidthsChange: onColumnWidthsChange,
+            onVisibleColumnsChange: onVisibleColumnsChange,
             onRowAction: onRowAction,
             onInspectorRequest: onInspectorRequest,
             mappings: mappings,
@@ -156,6 +174,12 @@ struct TorrentTableRepresentable: NSViewRepresentable {
         var downloadDirectoryBase: String?
         var onSortChange: ((TransmissionCore.TableColumn, Bool) -> Void)?
         var sortState: SortState?
+        var onColumnOrderChange: (([TransmissionCore.TableColumn]) -> Void)?
+        var onColumnWidthsChange: (([String: Double]) -> Void)?
+        var onVisibleColumnsChange: (([String]) -> Void)?
+        var columnOrderIDs: [String] = []
+        var columnWidths: [String: Double] = [:]
+        var visibleColumnIDs: Set<String> = []
         var actionsEnabled = true
         var labelsSupported = true
         var tagColors: [String: TagColor] = [:]
@@ -171,9 +195,72 @@ struct TorrentTableRepresentable: NSViewRepresentable {
         private var lastAppliedSortState: SortState?
         private var isNormalizingSortDescriptors = false
         private var isRestoringSelection = false
+        private var isRestoringColumnLayout = false
 
         init(selection: Binding<Set<Torrent.ID>>) {
             selectionBinding = selection
+        }
+
+        private func currentColumnOrder() -> [TransmissionCore.TableColumn] {
+            guard let tableView else { return [] }
+
+            return tableView.tableColumns.compactMap { column in
+                TransmissionCore.TableColumn(rawValue: column.identifier.rawValue)
+            }
+        }
+
+        private func currentColumnWidths() -> [String: Double] {
+            guard let tableView else { return [:] }
+
+            var result: [String: Double] = [:]
+            for column in tableView.tableColumns {
+                result[column.identifier.rawValue] = Double(column.width)
+            }
+            return result
+        }
+
+        private func restoreColumnLayoutIfNeeded() {
+            guard let tableView else { return }
+            guard !columnOrderIDs.isEmpty || !columnWidths.isEmpty || !visibleColumnIDs.isEmpty else { return }
+
+            isRestoringColumnLayout = true
+            defer { isRestoringColumnLayout = false }
+
+            applySavedColumnOrder(to: tableView)
+            applySavedColumnWidths(to: tableView)
+
+            if !visibleColumnIDs.isEmpty {
+                for column in tableView.tableColumns {
+                    let id = column.identifier.rawValue
+                    column.isHidden = !visibleColumnIDs.contains(id)
+                }
+            }
+        }
+
+        private func applySavedColumnOrder(to tableView: NSTableView) {
+            guard !columnOrderIDs.isEmpty else { return }
+
+            for (targetIndex, columnID) in columnOrderIDs.enumerated() {
+                guard
+                    let currentIndex = tableView.tableColumns.firstIndex(where: {
+                        $0.identifier.rawValue == columnID
+                    }),
+                    currentIndex != targetIndex,
+                    targetIndex < tableView.tableColumns.count
+                else { continue }
+
+                tableView.moveColumn(currentIndex, toColumn: targetIndex)
+            }
+        }
+
+        private func applySavedColumnWidths(to tableView: NSTableView) {
+            guard !columnWidths.isEmpty else { return }
+
+            for column in tableView.tableColumns {
+                let id = column.identifier.rawValue
+                guard let width = columnWidths[id] else { continue }
+                column.width = CGFloat(width)
+            }
         }
 
         func updateSelectionBinding(_ binding: Binding<Set<Torrent.ID>>) {
@@ -185,15 +272,27 @@ struct TorrentTableRepresentable: NSViewRepresentable {
         func configure(
             downloadDirectoryBase: String?,
             sortState: SortState?,
+            columnOrderIDs: [String],
+            columnWidths: [String: Double],
+            visibleColumnIDs: Set<String>,
             actionsEnabled: Bool,
             labelsSupported: Bool,
             tagColors: [String: TagColor],
             onSortChange: ((TransmissionCore.TableColumn, Bool) -> Void)?,
+            onColumnOrderChange: (([TransmissionCore.TableColumn]) -> Void)?,
+            onColumnWidthsChange: (([String: Double]) -> Void)?,
+            onVisibleColumnsChange: (([String]) -> Void)?,
             onRowAction: ((TorrentRowAction, [Torrent.ID]) -> Void)?,
             onInspectorRequest: (() -> Void)?,
             mappings: [OpenMapping],
             onOpenMapping: ((OpenMapping, [Torrent.ID]) -> Void)?
         ) {
+            self.columnOrderIDs = columnOrderIDs
+            self.columnWidths = columnWidths
+            self.visibleColumnIDs = visibleColumnIDs
+            self.onColumnOrderChange = onColumnOrderChange
+            self.onColumnWidthsChange = onColumnWidthsChange
+            self.onVisibleColumnsChange = onVisibleColumnsChange
             self.downloadDirectoryBase = downloadDirectoryBase
             self.sortState = sortState
             self.actionsEnabled = actionsEnabled
@@ -204,6 +303,8 @@ struct TorrentTableRepresentable: NSViewRepresentable {
             self.onInspectorRequest = onInspectorRequest
             self.mappings = mappings
             self.onOpenMapping = onOpenMapping
+
+            restoreColumnLayoutIfNeeded()
         }
 
         /// Single funnel for all row mutations. Selection is a separate concern
@@ -568,11 +669,37 @@ extension TorrentTableRepresentable.Coordinator: NSTableViewDelegate {
         return cell
     }
 
+    func tableViewColumnDidMove(_ notification: Notification) {
+        guard !isRestoringColumnLayout else { return }
+        let order = currentColumnOrder()
+        guard !order.isEmpty else { return }
+        onColumnOrderChange?(order)
+    }
+
+    func tableViewColumnDidResize(_ notification: Notification) {
+        guard !isRestoringColumnLayout else { return }
+        let widths = currentColumnWidths()
+        guard !widths.isEmpty else { return }
+        onColumnWidthsChange?(widths)
+    }
+
+
     func tableView(
         _ tableView: NSTableView,
         userCanChangeVisibilityOf column: NSTableColumn
     ) -> Bool {
-        true
+        let visibleCount = tableView.tableColumns.filter { !$0.isHidden }.count
+        return visibleCount > 1 || column.isHidden
+    }
+
+    func tableView(_ tableView: NSTableView, userDidChangeVisibilityOf columns: [NSTableColumn]) {
+        guard !isRestoringColumnLayout else { return }
+
+        let visibleIDs = tableView.tableColumns
+            .filter { !$0.isHidden }
+            .map { $0.identifier.rawValue }
+
+        onVisibleColumnsChange?(visibleIDs)
     }
 
 

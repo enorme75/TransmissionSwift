@@ -144,7 +144,7 @@ extension Torrent {
                 )
             }
         }
-
+        let announcedSeedCount = resolvedTrackers.map(\.seedCount).max() ?? 0
         // Transmission only raises the torrent-level `error` for hard failures
         // (tracker rejection, local errors). A tracker that's merely unreachable
         // leaves `error == 0` and gets retried silently — so when every tracker
@@ -189,7 +189,7 @@ extension Torrent {
             uploadSpeed: wire.rateUpload,
             connectedPeerCount: wire.peersConnected,
             availablePeerCount: wire.peersFrom.total,
-            seedCount: 0,
+            seedCount: announcedSeedCount,
             eta: eta,
             ratio: wire.uploadRatio,
             primaryTracker: primaryTracker,

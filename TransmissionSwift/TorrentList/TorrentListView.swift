@@ -8,6 +8,8 @@ struct TorrentListView: View {
 
     var body: some View {
         let prefs = store.tablePreferences
+        print("prefs visible on launch:", prefs.visibleColumns)
+        print("prefs order on launch:", prefs.columnOrder)
         return TorrentTableRepresentable(
             rows: store.visibleTorrents,
             selection: Binding(
@@ -17,8 +19,27 @@ struct TorrentListView: View {
             downloadDirectoryBase: store.downloadDirectory,
             sortColumnID: prefs.sortColumn,
             sortAscending: prefs.sortAscending,
+            columnOrderIDs: prefs.columnOrder,
+            columnWidths: prefs.columnWidths,
             onSortChange: { column, ascending in
                 store.setSortOrder(column: column, ascending: ascending)
+            },
+            onColumnOrderChange: { columns in
+                store.setColumnOrder(columns)
+            },
+            onColumnWidthsChange: { widths in
+                store.setColumnWidths(widths)
+            },
+            onVisibleColumnsChange: { ids in
+                let filtered = ids.filter { !$0.isEmpty }
+                print("visible columns callback:", filtered)
+
+                guard !filtered.isEmpty else { return }
+
+                DispatchQueue.main.async {
+                    store.updateVisibleColumns(filtered)
+                    print("saved visible columns:", store.tablePreferences.visibleColumns)
+                }
             },
             actionsEnabled: store.actionsEnabled,
             labelsSupported: store.supportsLabels,
@@ -47,7 +68,8 @@ struct TorrentListView: View {
             mappings: profileStore.activeProfile?.mappings ?? [],
             onOpenMapping: { mapping, ids in
                 openMapping(mapping, ids: ids)
-            }
+            },
+            visibleColumnIDs: Set(prefs.visibleColumns),
         )
         .onAppear {
             restoreSortOrder()

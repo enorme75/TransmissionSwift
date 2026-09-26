@@ -4,7 +4,6 @@ import Observation
 import TransmissionRPC
 
 private let logger = Logger(subsystem: "net.jvacek.TransmissionSwift", category: "inspector")
-private let tablePreferencesSortKey = "tablePreferencesSort"
 
 /// Surfaced to the UI when a user-initiated action fails. Identifiable so it
 /// can drive SwiftUI `.alert(item:)` directly.
@@ -113,14 +112,14 @@ public final class TorrentStore {
     // MARK: - Sort Preferences
     public var tablePreferences: TablePreferences {
         get {
-            guard let data = UserDefaults.standard.data(forKey: tablePreferencesSortKey),
-                let decoded = try? JSONDecoder().decode(TablePreferences.self, from: data)
+            guard let data = UserDefaults.standard.data(forKey: TablePreferences.storageKey),
+                  let decoded = try? JSONDecoder().decode(TablePreferences.self, from: data)
             else { return TablePreferences() }
             return decoded
         }
         set {
             guard let encoded = try? JSONEncoder().encode(newValue) else { return }
-            UserDefaults.standard.set(encoded, forKey: tablePreferencesSortKey)
+            UserDefaults.standard.set(encoded, forKey: TablePreferences.storageKey)
         }
     }
 
@@ -135,10 +134,13 @@ public final class TorrentStore {
         tablePreferences = prefs
     }
     
-    private func updateVisibleColumns(_ columns: [TableColumn.ID]) {
+    public func updateVisibleColumns(_ columns: [TableColumn.ID]) {
+        print("updateVisibleColumns:", columns)
         var prefs = tablePreferences
         prefs.visibleColumns = columns
+        print("about to save prefs:", prefs.visibleColumns)
         tablePreferences = prefs
+        print("saved")
     }
 
     public var selectedTorrents: [Torrent] {
@@ -274,11 +276,26 @@ public final class TorrentStore {
         updateSortOrder(column: column.rawValue, ascending: ascending)
         rebuildVisibleTorrents()
     }
-    
+
     public func setVisibleColumns(_ columns: [TableColumn]) {
         let ids = columns.map(\.rawValue)
         guard tablePreferences.visibleColumns != ids else { return }
         updateVisibleColumns(ids)
+    }
+
+    public func setColumnOrder(_ columns: [TableColumn]) {
+        let ids = columns.map(\.rawValue)
+        guard tablePreferences.columnOrder != ids else { return }
+        var prefs = tablePreferences
+        prefs.columnOrder = ids
+        tablePreferences = prefs
+    }
+
+    public func setColumnWidths(_ widths: [String: Double]) {
+        guard tablePreferences.columnWidths != widths else { return }
+        var prefs = tablePreferences
+        prefs.columnWidths = widths
+        tablePreferences = prefs
     }
 
     private func startStream() {
