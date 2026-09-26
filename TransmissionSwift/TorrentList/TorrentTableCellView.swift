@@ -103,6 +103,12 @@ extension TorrentCellContent {
         formatter.dateFormat = "dd/MM/yyyy"
         return formatter
     }()
+    private static let lastActivityDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "fr_FR")
+        formatter.dateFormat = "dd/MM/yyyy HH:mm"
+        return formatter
+    }()
 
     /// Builds the display value for `column` of `row`, folding the former
     /// `view(for:)` + `axLabel(for:)` into one place so they can't diverge.
@@ -205,7 +211,14 @@ extension TorrentCellContent {
                 accessibilityLabel: text)
         case .activityAt:
             let text = if let date = row.torrent.lastActivityAt {
-                date.formatted(.relative(presentation: .named))
+                date.formatted(
+                    .dateTime
+                        .day(.twoDigits)
+                        .month(.twoDigits)
+                        .year(.defaultDigits)
+                        .hour(.twoDigits(amPM: .omitted))
+                        .minute(.twoDigits)
+                )
             } else {
                 "—"
             }
@@ -271,15 +284,23 @@ extension TorrentCellContent {
                 toolTip: nil,
                 accessibilityLabel: "\(row.torrent.availablePeerCount) available")
         case .seeds:
-            let text = row.torrent.seedCount > 0 ? "\(row.torrent.seedCount)" : "\u{2014}"
+            let connectedSeeds = row.torrent.peers.filter {
+                $0.progress >= 1.0
+            }.count
+
+            let announcedSeeds = row.torrent.seedCount
+            let text = "\(connectedSeeds)/\(announcedSeeds)"
+
             return TorrentCellContent(
                 shape: .text,
                 text: text,
                 font: monoDigitFont,
-                color: row.torrent.seedCount > 0 ? .secondaryLabelColor : .tertiaryLabelColor,
+                color: announcedSeeds > 0
+                    ? .secondaryLabelColor
+                    : .tertiaryLabelColor,
                 alignment: .right,
                 toolTip: nil,
-                accessibilityLabel: "\(row.torrent.seedCount) seeds")
+                accessibilityLabel: "\(text) seeds")
         case .status:
             let (color, text) = statusContent(row.torrent.status)
             return TorrentCellContent(

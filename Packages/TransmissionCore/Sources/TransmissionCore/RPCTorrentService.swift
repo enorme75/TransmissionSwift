@@ -64,7 +64,10 @@ public actor RPCTorrentService: TorrentService {
     }
 
     public func torrents() async throws -> [Torrent] {
-        let resp = try await client.torrentGet(fields: TorrentGetResponse.listFields, ids: nil)
+        let resp = try await client.torrentGet(
+            fields: TorrentGetResponse.listFields,
+            ids: nil
+        )
         return resp.torrents.map { Torrent(wire: $0) }
     }
 
