@@ -32,10 +32,11 @@ struct TorrentRowDisplay: Equatable {
             && lhs.torrent.seedCount == rhs.torrent.seedCount
             && lhs.torrent.eta == rhs.torrent.eta
             && lhs.torrent.ratio == rhs.torrent.ratio
+            && lhs.torrent.uploadedEver == rhs.torrent.uploadedEver
             && lhs.torrent.primaryTracker == rhs.torrent.primaryTracker
             && lhs.torrent.downloadFolder == rhs.torrent.downloadFolder
             && lhs.torrent.addedAt == rhs.torrent.addedAt
-            && lhs.torrent.activityAt == rhs.torrent.activityAt
+            && lhs.torrent.lastActivityAt == rhs.torrent.lastActivityAt
             && lhs.torrent.labels == rhs.torrent.labels
             && lhs.torrent.priority == rhs.torrent.priority
             && lhs.torrent.pieces == rhs.torrent.pieces
@@ -96,6 +97,18 @@ extension TorrentCellContent {
     private static let captionMonoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
     private static let caption2Font = NSFont.systemFont(ofSize: 10)
     private static let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private static let addedDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "dd/MM/yyyy"
+        return formatter
+    }()
+    private static let lastActivityDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "fr_FR")
+        formatter.dateFormat = "dd/MM/yyyy HH:mm"
+        return formatter
+    }()
 
     /// Builds the display value for `column` of `row`, folding the former
     /// `view(for:)` + `axLabel(for:)` into one place so they can't diverge.
@@ -175,26 +188,62 @@ extension TorrentCellContent {
                 alignment: .right,
                 toolTip: nil,
                 accessibilityLabel: text)
+        case .sent:
+            let text = ColumnFormatters.humanizedSize(row.torrent.uploadedEver)
+            return TorrentCellContent(
+                shape: .text,
+                text: text,
+                font: monoDigitFont,
+                color: .secondaryLabelColor,
+                alignment: .right,
+                toolTip: nil,
+                accessibilityLabel: text)
         case .addedAt:
-            let text = ColumnFormatters.relativeDate(row.torrent.addedAt)
+            let date = row.torrent.addedAt
+            let text = Self.addedDateFormatter.string(from: date)
             return TorrentCellContent(
                 shape: .text,
                 text: text,
                 font: monoDigitFont,
                 color: .secondaryLabelColor,
                 alignment: .right,
-                toolTip: row.torrent.addedAt.formatted(date: .abbreviated, time: .complete),
-                accessibilityLabel: row.torrent.addedAt.formatted(date: .abbreviated, time: .shortened))
+                toolTip: text,
+                accessibilityLabel: text)
         case .activityAt:
-            let text = ColumnFormatters.relativeDate(row.torrent.activityAt)
+            let text = if let date = row.torrent.lastActivityAt {
+                date.formatted(
+                    .dateTime
+                        .day(.twoDigits)
+                        .month(.twoDigits)
+                        .year(.defaultDigits)
+                        .hour(.twoDigits(amPM: .omitted))
+                        .minute(.twoDigits)
+                )
+            } else {
+                "—"
+            }
+
+            let toolTip = if let date = row.torrent.lastActivityAt {
+                date.formatted(date: .abbreviated, time: .complete)
+            } else {
+                "No activity"
+            }
+
+            let accessibilityLabel = if let date = row.torrent.lastActivityAt {
+                date.formatted(date: .abbreviated, time: .shortened)
+            } else {
+                "No activity"
+            }
+
             return TorrentCellContent(
                 shape: .text,
                 text: text,
                 font: monoDigitFont,
                 color: .secondaryLabelColor,
                 alignment: .right,
-                toolTip: row.torrent.activityAt.formatted(date: .abbreviated, time: .complete),
-                accessibilityLabel: row.torrent.activityAt.formatted(date: .abbreviated, time: .shortened))
+                toolTip: toolTip,
+                accessibilityLabel: accessibilityLabel
+            )
         case .primaryTracker:
             if row.torrent.primaryTracker.isEmpty {
                 return TorrentCellContent(
@@ -235,15 +284,23 @@ extension TorrentCellContent {
                 toolTip: nil,
                 accessibilityLabel: "\(row.torrent.availablePeerCount) available")
         case .seeds:
-            let text = row.torrent.seedCount > 0 ? "\(row.torrent.seedCount)" : "\u{2014}"
+            let connectedSeeds = row.torrent.peers.filter {
+                $0.progress >= 1.0
+            }.count
+
+            let announcedSeeds = row.torrent.seedCount
+            let text = "\(connectedSeeds)/\(announcedSeeds)"
+
             return TorrentCellContent(
                 shape: .text,
                 text: text,
                 font: monoDigitFont,
-                color: row.torrent.seedCount > 0 ? .secondaryLabelColor : .tertiaryLabelColor,
+                color: announcedSeeds > 0
+                    ? .secondaryLabelColor
+                    : .tertiaryLabelColor,
                 alignment: .right,
                 toolTip: nil,
-                accessibilityLabel: "\(row.torrent.seedCount) seeds")
+                accessibilityLabel: "\(text) seeds")
         case .status:
             let (color, text) = statusContent(row.torrent.status)
             return TorrentCellContent(

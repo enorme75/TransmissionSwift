@@ -128,9 +128,9 @@ extension TorrentGetResponse {
         "status", "error", "errorString", "isFinished",
         "percentDone", "rateDownload", "rateUpload",
         "peersConnected", "peersSendingToUs", "peersGettingFromUs", "peersFrom",
-        "eta", "uploadRatio",
+        "eta", "uploadRatio", "uploadedEver",
         "downloadDir", "addedDate",
-        "labels", "bandwidthPriority",
+        "labels", "bandwidthPriority", "activityDate",
         "pieceCount", "pieceSize", "haveValid",
         "queuePosition", "trackers", "trackerStats",
     ]
