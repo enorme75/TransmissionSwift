@@ -60,7 +60,9 @@ struct TorrentRowDisplayTests {
             case .primaryTracker: changed.primaryTracker = "other"
             case .connectedPeers: changed.connectedPeerCount += 1
             case .availablePeers: changed.availablePeerCount += 1
-            case .seeds: changed.seedCount += 1
+            case .seeds:
+                changed.seedCount += 1
+                changed.peersSendingToUs += 1
             case .queuePosition: changed.queuePosition = 3
             case .label: changed.labels = ["x"]
             case .priority: changed.priority = .high

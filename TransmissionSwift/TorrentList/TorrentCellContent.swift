@@ -187,15 +187,22 @@ extension TorrentCellContent {
                 toolTip: nil,
                 accessibilityLabel: "\(row.torrent.availablePeerCount) available")
         case .seeds:
-            let text = row.torrent.seedCount > 0 ? "\(row.torrent.seedCount)" : "\u{2014}"
+            // Active seeds over announced seeders: the numerator is the peers
+            // currently sending to us (the list poll carries no
+            // connected-seed count), the denominator the seeders the trackers
+            // announced.
+            let active = row.torrent.peersSendingToUs
+            let announced = row.torrent.seedCount
+            let text =
+                active == 0 && announced == 0 ? "\u{2014}" : "\(active)/\(announced)"
             return TorrentCellContent(
                 shape: .text,
                 text: text,
                 font: monoDigitFont,
-                color: row.torrent.seedCount > 0 ? .secondaryLabelColor : .tertiaryLabelColor,
+                color: announced > 0 ? .secondaryLabelColor : .tertiaryLabelColor,
                 alignment: .right,
-                toolTip: nil,
-                accessibilityLabel: "\(row.torrent.seedCount) seeds")
+                toolTip: "\(active) seeds sending now, \(announced) seeders announced",
+                accessibilityLabel: "\(active) sending seeds, \(announced) announced seeds")
         case .status:
             let (color, text) = statusContent(row.torrent.status)
             return TorrentCellContent(

@@ -29,6 +29,7 @@ nonisolated struct TorrentRowDisplay: Equatable {
             && lhs.torrent.connectedPeerCount == rhs.torrent.connectedPeerCount
             && lhs.torrent.availablePeerCount == rhs.torrent.availablePeerCount
             && lhs.torrent.seedCount == rhs.torrent.seedCount
+            && lhs.torrent.peersSendingToUs == rhs.torrent.peersSendingToUs
             && lhs.torrent.eta == rhs.torrent.eta
             && lhs.torrent.ratio == rhs.torrent.ratio
             && lhs.torrent.primaryTracker == rhs.torrent.primaryTracker

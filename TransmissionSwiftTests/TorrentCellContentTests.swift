@@ -39,6 +39,22 @@ struct TorrentCellContentTests {
         #expect(content.text == "\u{2014}")
     }
 
+    @Test func cellContent_seedsShowsActiveOverAnnounced() {
+        var torrent = makeTableTorrent()
+        torrent.peersSendingToUs = 3
+        torrent.seedCount = 17
+        let content = TorrentCellContent.make(
+            for: .seeds, row: TorrentRowDisplay(torrent), downloadDirectoryBase: nil)
+        #expect(content.shape == .text)
+        #expect(content.text == "3/17")
+        #expect(content.accessibilityLabel == "3 sending seeds, 17 announced seeds")
+
+        // A swarm that announced nothing renders an em dash, not "0/0".
+        let idle = TorrentCellContent.make(
+            for: .seeds, row: TorrentRowDisplay(makeTableTorrent()), downloadDirectoryBase: nil)
+        #expect(idle.text == "\u{2014}")
+    }
+
     @Test func cellContent_labelWithTagsUsesPillsAndColours() {
         let torrent = makeTableTorrent(labels: ["A", "B"])
         let content = TorrentCellContent.make(
