@@ -16,17 +16,32 @@ on:
     secrets:
       SPARKLE_PRIVATE_KEY:
         required: true
+      # Required: a release without dSYMs ships unsymbolicated crash reports.
+      SENTRY_AUTH_TOKEN:
+        required: true
+
+# Serialise with the Pages workflow, which also deploys the Pages site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 permissions:
   actions: read
   contents: write
+  pages: write
+  id-token: write
+
+env:
+  # Public base URL the Pages site is served from; the appcast's release-notes
+  # links point here. Switch to the custom domain once HTTPS is enforced.
+  SITE_BASE_URL: https://jvacek.github.io/TransmissionSwift
 
 jobs:
   build-release:
     name: Build and publish
     runs-on: macos-26
     concurrency:
-      # Serialize stable and pre-release runs: they all write the same gh-pages
+      # Serialize stable and pre-release runs: they all write the same
       # appcast, so concurrent runs could clobber each other.
       group: release-pipeline
       cancel-in-progress: false
@@ -79,14 +94,19 @@ jobs:
           RELEASE_SHA="$(git rev-parse HEAD)"
 
           if [ "$PRERELEASE" = "true" ]; then
-            TAG="prerelease-${RELEASE_DATE}-${SHORT_SHA}"
-            TITLE="Pre-release ${RELEASE_DATE} ${SHORT_SHA}"
-            APPCAST_TITLE="Pre-release ${RELEASE_DATE}"
+            # Per-day ordinal so several pre-releases on the same day sort by
+            # number rather than by commit hash. Runs are serialised by the
+            # release-pipeline concurrency group and the tag is only created at
+            # the end, so the count never races another run.
+            PRERELEASE_SEQ="$(printf '%02d' "$(( $(git tag -l "prerelease-${RELEASE_DATE}-*" | wc -l | tr -d ' ') + 1 ))")"
+            TAG="prerelease-${RELEASE_DATE}-${PRERELEASE_SEQ}-${SHORT_SHA}"
+            TITLE="Pre-release ${RELEASE_DATE} ${PRERELEASE_SEQ} (${SHORT_SHA})"
+            APPCAST_TITLE="Pre-release ${RELEASE_DATE} (${PRERELEASE_SEQ})"
             SHORT_VERSION="0.1"
             CHANNEL="beta"
             PRERELEASE_FLAG="--prerelease"
             BUILD_EXTRA_FLAGS="SWIFT_ACTIVE_COMPILATION_CONDITIONS=PRERELEASE"
-            ZIP_BASENAME="TransmissionSwift-${RELEASE_DATE}-${SHORT_SHA}"
+            ZIP_BASENAME="TransmissionSwift-${RELEASE_DATE}-${PRERELEASE_SEQ}-${SHORT_SHA}"
           else
             TAG="v${VERSION}"
             TITLE="TransmissionSwift ${VERSION}"
@@ -98,7 +118,7 @@ jobs:
             ZIP_BASENAME="TransmissionSwift-${TAG}"
           fi
 
-          ZIP_PATH="build/${ZIP_BASENAME}.zip"
+          ZIP_PATH="build/${ZIP_BASENAME}-universal.zip"
           ZIP_PATH_ARM64="build/${ZIP_BASENAME}-arm64.zip"
 
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
@@ -121,6 +141,28 @@ jobs:
       - name: Install xcbeautify
         run: brew install xcbeautify
 
+      - name: Import signing certificate
+        # App Intents refuse ad-hoc apps, so the shipped build must carry a team
+        # identity. Reuses the same Apple Development certificate as the App
+        # Intents test lane (APP_INTENTS_* secrets), passed down by the caller's
+        # `secrets: inherit`.
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.APP_INTENTS_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.APP_INTENTS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APP_INTENTS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/build_certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security find-identity -p codesigning -v
+
       - name: Build universal app
         run: |
           set -euo pipefail
@@ -133,10 +175,37 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
+            ENABLE_CODE_COVERAGE=NO \
             ONLY_ACTIVE_ARCH=NO \
             CURRENT_PROJECT_VERSION="$RELEASE_BUILD_VERSION" \
             $BUILD_EXTRA_FLAGS \
             build | xcbeautify --renderer github-actions
+
+      - name: Upload dSYMs to Sentry
+        # Mandatory: a release whose dSYMs never reach Sentry ships
+        # unsymbolicated crash reports, so a missing token fails the run here,
+        # before the GitHub release is created below. Upload before signing so
+        # the dSYM is the one the compiler produced; symbolication matches by
+        # build version. The DSN itself is baked into the app's Release build
+        # settings, so no DSN is needed here.
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: flamerelay
+          SENTRY_PROJECT: transmissionswift
+          SENTRY_URL: https://us.sentry.io
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            echo "::error::SENTRY_AUTH_TOKEN is not set; refusing to publish a release without dSYMs."
+            exit 1
+          fi
+
+          brew install getsentry/tools/sentry-cli
+          dSYM="build/DerivedData/Build/Products/Release/TransmissionSwift.app.dSYM"
+          sentry-cli releases new "$RELEASE_BUILD_VERSION"
+          sentry-cli debug-files upload "$dSYM"
+          sentry-cli releases finalize "$RELEASE_BUILD_VERSION"
 
       - name: Sign, thin and zip bundles
         run: |
@@ -148,11 +217,30 @@ jobs:
             exit 1
           fi
 
+          # Sentry symbolicates from the uploaded dSYM (matched by the binary's
+          # UUID, which strip preserves), never from the shipped executable's
+          # symbol table. Strip before signing to drop the symbol table; the
+          # arm64 copy below is thinned from this already-stripped bundle.
+          xcrun strip -x "$app_path/Contents/MacOS/TransmissionSwift"
+
+          # Sign with the imported team identity — ad-hoc signatures make App
+          # Intents unusable, which is the whole point of shipping them. Nested
+          # code is signed with the same identity.
+          IDENTITY="$(security find-identity -v -p codesigning \
+            | sed -nE 's/.*"(Apple Development[^"]*)".*/\1/p' | head -1)"
+          if [ -z "$IDENTITY" ]; then
+            echo "No Apple Development signing identity found."
+            exit 1
+          fi
+          echo "Signing with: $IDENTITY"
+
           # Release sandbox entitlements. The Release config derives these from
           # build settings at sign time (ENABLE_APP_SANDBOX etc.), but signing
-          # is disabled above (no certs on CI), so embed the equivalent set
-          # explicitly when ad-hoc signing. Mirrors the Debug entitlements
-          # minus Debug-only keys (get-task-allow, / read exception).
+          # is disabled above (CODE_SIGNING_ALLOWED=NO), so embed the equivalent
+          # set explicitly here. Mirrors the Debug entitlements minus Debug-only
+          # keys (get-task-allow, / read exception). The mach-lookup names need
+          # the literal bundle id: raw codesign does not expand
+          # $(PRODUCT_BUNDLE_IDENTIFIER).
           cat > build/Release.entitlements <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -166,6 +254,11 @@ jobs:
               <true/>
               <key>com.apple.security.network.client</key>
               <true/>
+              <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+              <array>
+                  <string>jvacek.TransmissionSwift-spks</string>
+                  <string>jvacek.TransmissionSwift-spki</string>
+              </array>
           </dict>
           </plist>
           EOF
@@ -184,10 +277,10 @@ jobs:
               | sort -r \
               | while IFS= read -r nested; do
                 if [ "$nested" != "$bundle" ]; then
-                  codesign --force --sign - --preserve-metadata=entitlements "$nested"
+                  codesign --force --sign "$IDENTITY" --preserve-metadata=entitlements "$nested"
                 fi
               done
-            codesign --force --sign - --entitlements build/Release.entitlements "$bundle"
+            codesign --force --sign "$IDENTITY" --entitlements build/Release.entitlements "$bundle"
             codesign --verify --deep --strict --verbose=2 "$bundle"
           }
 
@@ -206,12 +299,71 @@ jobs:
             if lipo -info "$f" 2>/dev/null | grep -q "Architectures in the fat file"; then
               thin_out="$f.thin"
               lipo "$f" -thin arm64 -output "$thin_out" && mv "$thin_out" "$f"
-              codesign --force --sign - --preserve-metadata=entitlements "$f"
+              codesign --force --sign "$IDENTITY" --preserve-metadata=entitlements "$f"
             fi
           done
           seal_bundle "$arm_app"
           lipo -info "$arm_app/Contents/MacOS/TransmissionSwift"
           ditto -c -k --keepParent "$arm_app" "$ZIP_PATH_ARM64"
+
+      - name: Verify release artifacts
+        run: |
+          set -euo pipefail
+
+          # Re-verify the zipped artifacts, not just the build dirs, so a
+          # broken seal or a bad ditto round-trip fails the run instead of
+          # shipping. Gatekeeper triage from the 0.5.2 incident: a thin arm64
+          # binary with only the linker's ad-hoc stub and no sealed resources
+          # verifies as "code has no resources…" (Finder: damaged, no bypass),
+          # while the fat binary verifies as "not signed at all" (Finder:
+          # unverified developer, bypassable). Any verify failure here is the
+          # damaged state — fail loudly.
+          verify_artifact() {
+            local zip="$1"
+            local want="$2" # thin-arm64 | fat
+            local work
+            work="$(mktemp -d)"
+            ditto -x -k "$zip" "$work"
+            local app="$work/TransmissionSwift.app"
+            if [ ! -d "$app/Contents/_CodeSignature" ]; then
+              echo "$zip: missing _CodeSignature seal."
+              exit 1
+            fi
+            codesign --verify --deep --strict --verbose=2 "$app"
+            local archs
+            archs="$(lipo -info "$app/Contents/MacOS/TransmissionSwift")"
+            if [ "$want" = "thin-arm64" ]; then
+              if ! echo "$archs" | grep -q "Non-fat file"; then
+                echo "$zip: expected thin arm64 binary, got: $archs"
+                exit 1
+              fi
+            else
+              if ! echo "$archs" | grep -q "Architectures in the fat file"; then
+                echo "$zip: expected universal binary, got: $archs"
+                exit 1
+              fi
+            fi
+            if ! echo "$archs" | grep -q "arm64"; then
+              echo "$zip: arm64 slice missing: $archs"
+              exit 1
+            fi
+            if ! codesign -d --entitlements :- "$app" 2>/dev/null | grep -q "com.apple.security.app-sandbox"; then
+              echo "$zip: sandbox entitlements missing."
+              exit 1
+            fi
+            # App Intents require a team identity; an ad-hoc release ships with
+            # Shortcuts actions that can't reach the app (Code=800). Tripwire so
+            # that class of broken release fails here instead of on a user's Mac.
+            if codesign -dv "$app" 2>&1 | grep -q "TeamIdentifier=not set"; then
+              echo "$zip: ad-hoc signed (no TeamIdentifier); App Intents will not work."
+              exit 1
+            fi
+            echo "$zip: OK ($archs)"
+            rm -rf "$work"
+          }
+
+          verify_artifact "$ZIP_PATH" fat
+          verify_artifact "$ZIP_PATH_ARM64" thin-arm64
 
       - name: Install Sparkle tools
         run: |
@@ -299,8 +451,8 @@ jobs:
             ' CHANGELOG.md > build/changelog.md
           fi
 
-          release_notes_url="https://jvacek.github.io/TransmissionSwift/release-notes-${TAG}.md"
-          full_release_notes_url="https://jvacek.github.io/TransmissionSwift/changelog.md"
+          release_notes_url="${SITE_BASE_URL}/release-notes-${TAG}.md"
+          full_release_notes_url="${SITE_BASE_URL}/changelog.md"
           echo "RELEASE_NOTES_URL=$release_notes_url" >> "$GITHUB_ENV"
           echo "FULL_RELEASE_NOTES_URL=$full_release_notes_url" >> "$GITHUB_ENV"
 
@@ -318,15 +470,19 @@ jobs:
             --notes-file build/changelog.md \
             $PRERELEASE_FLAG
 
-      - name: Fetch existing appcast
+      # The feed lives on the gh-pages branch (history = backups). Read the
+      # branch tip directly rather than raw.githubusercontent.com, which is
+      # CDN-cached and can serve a stale feed to back-to-back releases.
+      - name: Fetch previous appcasts
         run: |
           set -euo pipefail
+          git fetch origin gh-pages:refs/remotes/origin/gh-pages
+          for f in appcast.xml appcast-arm64.xml; do
+            git show "origin/gh-pages:${f}" > "build/appcast/${f}" \
+              || echo "no ${f} on gh-pages yet"
+          done
 
-          curl -sL \
-            "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/gh-pages/appcast.xml" \
-            -o build/appcast/appcast.xml || true
-
-      - name: Update appcast
+      - name: Update appcasts
         run: |
           set -euo pipefail
 
@@ -340,14 +496,34 @@ jobs:
             --length "$ED_LENGTH" \
             --release-notes-url "$RELEASE_NOTES_URL" \
             --full-release-notes-url "$FULL_RELEASE_NOTES_URL" \
-            --channel "$CHANNEL" \
-            --download-url-arm64 "$DOWNLOAD_URL_ARM64" \
-            --signature-arm64 "$SIGNATURE_ARM64" \
-            --length-arm64 "$ED_LENGTH_ARM64"
+            --channel "$CHANNEL"
 
-      - name: Deploy appcast to GitHub Pages
+          python3 scripts/update_appcast.py \
+            --appcast-path build/appcast/appcast-arm64.xml \
+            --download-url "$DOWNLOAD_URL_ARM64" \
+            --title "$APPCAST_TITLE" \
+            --short-version "$SHORT_VERSION" \
+            --build-version "$RELEASE_BUILD_VERSION" \
+            --signature "$SIGNATURE_ARM64" \
+            --length "$ED_LENGTH_ARM64" \
+            --release-notes-url "$RELEASE_NOTES_URL" \
+            --full-release-notes-url "$FULL_RELEASE_NOTES_URL" \
+            --channel "$CHANNEL" \
+            --hardware-requirements arm64
+
+      # Persist the feed to gh-pages. keep_files preserves previously published
+      # release-notes-*.md files, which this run does not republish.
+      - name: Deploy feed to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./build/appcast
+          publish_branch: gh-pages
           keep_files: true
+
+  # The site is built from one place (deploy-pages.yml); this job just points
+  # it at the feed the build job just pushed.
+  deploy-pages:
+    name: Deploy Pages
+    needs: build-release
+    uses: ./.github/workflows/deploy-pages.yml

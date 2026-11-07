@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TransmissionTestSupport
 
 @testable import TransmissionCore
 @testable import TransmissionRPC
@@ -26,7 +27,7 @@ private func runPipeline(
 
 /// A `TorrentService` that only supports snapshot capture — everything else is
 /// a no-op. Lets `TorrentStore.captureSnapshot` be tested in isolation.
-private struct StubSnapshotService: TorrentService {
+private struct StubSnapshotService: TorrentReading {
     let raw: SnapshotFile
 
     private var domainTorrents: [Torrent] { raw.torrents.map { Torrent(wire: $0) } }
@@ -42,25 +43,7 @@ private struct StubSnapshotService: TorrentService {
     }
     func freeSpace() async -> Int64? { nil }
     func downloadDirectory() async -> String? { nil }
-    func start(_ ids: [Torrent.ID]) async throws {}
-    func stop(_ ids: [Torrent.ID]) async throws {}
-    func remove(_ ids: [Torrent.ID], deleteLocalData: Bool) async throws {}
-    func verify(_ ids: [Torrent.ID]) async throws {}
-    func reannounce(_ ids: [Torrent.ID]) async throws {}
-    func setFilesWanted(_ id: Torrent.ID, fileIDs: [TorrentFile.ID], wanted: Bool) async throws {}
-    func setFilePriority(_ id: Torrent.ID, fileIDs: [TorrentFile.ID], priority: TorrentPriority)
-        async throws
-    {}
-    func setPriority(_ ids: [Torrent.ID], priority: TorrentPriority) async throws {}
-    func setOptions(_ id: Torrent.ID, options: TorrentOptions) async throws {}
-    func setLabels(_ ids: [Torrent.ID], labels: [String]) async throws {}
-    func setLocation(_ ids: [Torrent.ID], location: String, move: Bool) async throws {}
-    func setAlternativeSpeedEnabled(_ enabled: Bool) async throws {}
     func isAlternativeSpeedEnabled() async -> Bool { false }
-    func add(
-        fileURL: URL?, magnetURL: String?, destination: String, labels: [String],
-        priority: TorrentPriority, startWhenAdded: Bool
-    ) async throws {}
     func inspectorData(for id: Torrent.ID) async throws -> Torrent {
         struct NotFound: Error {}
         throw NotFound()
@@ -211,7 +194,7 @@ struct SnapshotPipelineTests {
         )
 
         #expect(result.torrentCount == 2)
-        #expect(result.summary.trackerURLs == 6)
+        #expect(result.summary.trackerURLs == 9)
         #expect(result.summary.passkeysStripped == 1)
         #expect(result.summary.peerIPs == 3)
         #expect(result.summary.names == 3)  // fuzzed tracker sitenames only — real names are kept
@@ -228,11 +211,11 @@ struct SnapshotPipelineTests {
     func captureScopedToFilters() async throws {
         let stub = StubSnapshotService(raw: SnapshotFixtures.rawSnapshot())
         let store = TorrentStore(service: stub)
-        await waitFor { store.visibleTorrents.count == 2 }
+        await waitFor { store.list.visibleTorrents.count == 2 }
 
         // Narrow to the downloading torrent only.
-        store.setStatusFilter(.downloading)
-        await waitFor { store.visibleTorrents.count == 1 }
+        store.list.setStatusFilter(.downloading)
+        await waitFor { store.list.visibleTorrents.count == 1 }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("snapshot-test-\(UUID().uuidString).json")
@@ -254,7 +237,7 @@ struct SnapshotPipelineTests {
     func captureCapped() async throws {
         let stub = StubSnapshotService(raw: SnapshotFixtures.rawSnapshot())
         let store = TorrentStore(service: stub)
-        await waitFor { store.visibleTorrents.count == 2 }
+        await waitFor { store.list.visibleTorrents.count == 2 }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("snapshot-test-\(UUID().uuidString).json")

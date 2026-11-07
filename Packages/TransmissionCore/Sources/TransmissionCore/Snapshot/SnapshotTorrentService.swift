@@ -1,0 +1,69 @@
+import Foundation
+import TransmissionRPC
+
+/// A frozen, read-only `TorrentService` backed by a snapshot file captured
+/// from a real daemon (see `doc/snapshot-replay.md`). Launched with the
+/// `--snapshot <path>` app argument.
+///
+/// Decodes the wire-shaped envelope through the same types (`SessionInfo`,
+/// `WireTorrent`) and the same `Torrent(wire:)` mapping as a live poll, then
+/// serves the state with no network. The stream yields the list once and
+/// closes — there is nothing to tick. Mutations are unavailable: this type
+/// conforms only to `TorrentReading`, so a mutation can't even be requested.
+public actor SnapshotTorrentService: TorrentReading {
+    private let session: SessionInfo
+    private let domainTorrents: [Torrent]
+    private let colors: [String: TagColor]
+    private let serverName: String?
+
+    public init(fileURL: URL) throws {
+        let data = try Data(contentsOf: fileURL)
+        let file = try JSONDecoder().decode(SnapshotFile.self, from: data)
+        guard file.version == snapshotFormatVersion else {
+            throw SnapshotError.unsupportedVersion(file.version)
+        }
+        self.session = file.session
+        self.domainTorrents = file.torrents.map { Torrent(wire: $0) }
+        self.colors = file.tagColors ?? [:]
+        self.serverName = file.source.serverName
+    }
+
+    /// Tag→colour assignments captured with the snapshot, for seeding the
+    /// replay's `TagColorStore` so colours render identically to the capture.
+    public nonisolated var tagColors: [String: TagColor] { colors }
+
+    /// The server name the snapshot should replay as, if it carries one.
+    public nonisolated var displayServerName: String? { serverName }
+
+    // MARK: - TorrentReading
+
+    public func freeSpace() async -> Int64? { session.downloadDirFreeSpace }
+
+    public func downloadDirectory() async -> String? { session.downloadDir }
+
+    public func torrents() async throws -> [Torrent] { domainTorrents }
+
+    public func torrentsStream() -> AsyncThrowingStream<[Torrent], Error> {
+        let (stream, continuation) = AsyncThrowingStream<[Torrent], Error>.makeStream()
+        continuation.yield(domainTorrents)
+        continuation.finish()
+        return stream
+    }
+
+    public func inspectorData(for id: Torrent.ID) async throws -> Torrent {
+        guard let torrent = domainTorrents.first(where: { $0.id == id }) else {
+            throw SnapshotError.torrentNotFound(id)
+        }
+        return torrent
+    }
+
+    public func isAlternativeSpeedEnabled() async -> Bool { session.altSpeedEnabled }
+
+    public func daemonVersion() async -> String? { session.version }
+
+    /// Read-only: the captured session's settings, so the Speed/Network panes
+    /// render the frozen values.
+    public func sessionSettings() async -> SessionSettings? { SessionSettings(wire: session) }
+
+    public func isPortOpen() async -> Bool? { nil }
+}

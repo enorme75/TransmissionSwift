@@ -16,6 +16,7 @@ struct AddTorrentSheet: View {
 
     var initialMagnetMode: Bool = false
     var prefilledURL: URL? = nil
+    var serverName: String? = nil
 
     private enum Field: Hashable { case magnet, destination }
 
@@ -28,53 +29,67 @@ struct AddTorrentSheet: View {
     @State private var tags: [String] = []
     @State private var priority: TorrentPriority = .normal
     @State private var startWhenAdded: Bool = true
+    /// Read-only mirror of the Settings default. The row below flips the
+    /// `@State` copy for this add only — it must never write back.
+    @AppStorage(PreferenceKeys.deleteTorrentFileAfterAdding) private var deleteTorrentFileByDefault = false
+    @State private var deleteSourceFile = false
     @State private var showFileImporter: Bool = false
     @State private var isAdding: Bool = false
+    @State private var saveError: String? = nil
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading) {
-                modePicker
-                sourceSection
-                optionsSection
-            }
-            // Clear the floating glass header so content starts below it,
-            // then scrolls underneath its blur layer.
-            .padding(.top, 45)
-            .padding([.horizontal, .bottom], 20)
-        }
-        .overlay(alignment: .top) { headerBar }
-        .frame(width: 560)
-        .fileImporter(
-            isPresented: $showFileImporter,
-            allowedContentTypes: [.torrentFile]
-        ) { result in
-            if case .success(let url) = result {
-                fileURL = url
-            }
-        }
-        .onAppear {
-            if destination.isEmpty {
-                destination = store.downloadDirectory ?? ""
-            }
-            mode = initialMagnetMode ? .magnet : .file
-            if let url = prefilledURL {
-                if url.scheme == "magnet" {
-                    mode = .magnet
-                    magnetString = url.absoluteString
-                } else {
-                    mode = .file
+        // No outer ScrollView: the form is short and fixed-height, so scrolling
+        // it only produced rubber-band bounce. The sheet instead grows to fit
+        // its content, letting the known-folders list expand the sheet
+        // dynamically; only that list itself scrolls when it overflows.
+        sheetContent
+            .overlay(alignment: .top) { headerBar }
+            .frame(width: 560)
+            .fileImporter(
+                isPresented: $showFileImporter,
+                allowedContentTypes: [.torrentFile]
+            ) { result in
+                if case .success(let url) = result {
                     fileURL = url
                 }
             }
-            // Explicit focus so macOS doesn't auto-focus (and select-all) the
-            // Destination field. In magnet mode, focus the input so a paste lands
-            // immediately; in file mode, leave focus unset.
-            focusedField = mode == .magnet ? .magnet : nil
+            .onAppear {
+                // Destination stays empty by default — empty resolves to the
+                // default download dir via resolveServerPath, same as Set
+                // Location. The Full-path preview shows the real target.
+                mode = initialMagnetMode ? .magnet : .file
+                // Seed the per-add option from the Settings default; the
+                // toggle below never writes back.
+                deleteSourceFile = deleteTorrentFileByDefault
+                if let url = prefilledURL {
+                    if url.scheme == "magnet" {
+                        mode = .magnet
+                        magnetString = url.absoluteString
+                    } else {
+                        mode = .file
+                        fileURL = url
+                    }
+                }
+                // Explicit focus so macOS doesn't auto-focus (and select-all) the
+                // Destination field. In magnet mode, focus the input so a paste lands
+                // immediately; in file mode, leave focus unset.
+                focusedField = mode == .magnet ? .magnet : nil
+            }
+            .onChange(of: mode) { _, newMode in
+                focusedField = newMode == .magnet ? .magnet : nil
+            }
+    }
+
+    /// The sheet's form. Kept out of a scroll view — it always fits — with top
+    /// padding clearing the floating glass header.
+    private var sheetContent: some View {
+        VStack(alignment: .leading) {
+            modePicker
+            sourceSection
+            optionsSection
         }
-        .onChange(of: mode) { _, newMode in
-            focusedField = newMode == .magnet ? .magnet : nil
-        }
+        .padding(.top, 45)
+        .padding([.horizontal, .bottom], 20)
     }
 
     // MARK: - Sections
@@ -187,26 +202,16 @@ struct AddTorrentSheet: View {
     /// card: fixed-width label column, vertical separator, control leading.
     private var optionsSection: some View {
         VStack(spacing: 0) {
-            formRow("Destination") {
-                TextField("", text: $destination)
-                    .monospaced()
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textFieldStyle(.plain)
-                    .padding(6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.secondary.opacity(0.07))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(Color.secondary.opacity(0.25))
-                    )
-                    .focused($focusedField, equals: .destination)
+            formRow("Destination", alignLabelToTop: true) {
+                ServerPathField(
+                    path: $destination,
+                    defaultDirectory: store.list.downloadDirectory,
+                    folders: knownFolders,
+                    serverName: serverName)
             }
             Divider()
             formRow("Tags") {
-                TagsInputField(tags: $tags, suggestions: store.facets.labels.map(\.name))
+                TagsInputField(tags: $tags, suggestions: store.list.facets.labels.map(\.name))
                     .help(
                         "Type a tag and press Return to add it — or pick an existing one from the list that appears."
                     )
@@ -219,6 +224,25 @@ struct AddTorrentSheet: View {
             formRow("") {
                 Toggle("Start when added", isOn: $startWhenAdded)
             }
+            // Magnets have no local file, so the cleanup option only makes
+            // sense — and only shows — for file adds.
+            if mode == .file {
+                Divider()
+                formRow("") {
+                    Toggle("Delete .torrent file after adding", isOn: $deleteSourceFile)
+                }
+            }
+            if let saveError {
+                Divider()
+                Text(saveError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+            }
         }
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -230,11 +254,21 @@ struct AddTorrentSheet: View {
         )
     }
 
-    private func formRow(_ label: String, @ViewBuilder content: () -> some View) -> some View {
-        HStack(spacing: 12) {
+    /// Folders the daemon already knows about, offered as one-click destinations.
+    private var knownFolders: [String] {
+        serverPathSuggestions(from: store.list.facets)
+    }
+
+    private let formLabelWidth: CGFloat = 90
+
+    private func formRow(
+        _ label: String, alignLabelToTop: Bool = false, @ViewBuilder content: () -> some View
+    ) -> some View {
+        HStack(alignment: alignLabelToTop ? .top : .center, spacing: 12) {
             Text(label)
                 .foregroundStyle(.primary)
-                .frame(width: 90, alignment: .leading)
+                .frame(width: formLabelWidth, alignment: .leading)
+                .padding(.top, alignLabelToTop ? 4 : 0)
             content()
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
@@ -330,24 +364,32 @@ struct AddTorrentSheet: View {
     // MARK: - Logic
 
     private var isValid: Bool {
-        switch mode {
-        case .file: return fileURL != nil
-        case .magnet: return magnetString.hasPrefix("magnet:?xt=urn:btih:")
-        }
+        let sourceValid: Bool =
+            switch mode {
+            case .file: fileURL != nil
+            case .magnet: magnetString.hasPrefix("magnet:?xt=urn:btih:")
+            }
+        return sourceValid && isSubmittableServerPath(destination, relativeTo: store.list.downloadDirectory)
     }
 
     private func submit() async {
         isAdding = true
         defer { isAdding = false }
-        await store.add(
+        saveError = nil
+        let succeeded = await store.actions.add(
             fileURL: mode == .file ? fileURL : nil,
             magnetURL: mode == .magnet ? magnetString : nil,
-            destination: destination,
+            destination: resolveServerPath(destination, relativeTo: store.list.downloadDirectory),
             labels: tags,
             priority: priority,
-            startWhenAdded: startWhenAdded
+            startWhenAdded: startWhenAdded,
+            deleteFileAfterAdding: mode == .file && deleteSourceFile
         )
-        isPresented = false
+        if succeeded {
+            isPresented = false
+        } else {
+            saveError = store.lastActionError?.localizedDescription ?? "Failed to add torrent."
+        }
     }
 }
 
@@ -357,12 +399,12 @@ extension UTType {
 
 #Preview("Add Torrent") {
     AddTorrentSheet(isPresented: .constant(true))
-        .environment(TorrentStore(service: MockTorrentService()))
+        .environment(previewTorrentStore)
         .environment(TagColorStore())
 }
 
 #Preview("Magnet") {
     AddTorrentSheet(isPresented: .constant(true), initialMagnetMode: true)
-        .environment(TorrentStore(service: MockTorrentService()))
+        .environment(previewTorrentStore)
         .environment(TagColorStore())
 }

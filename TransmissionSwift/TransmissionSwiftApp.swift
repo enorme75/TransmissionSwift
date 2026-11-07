@@ -9,30 +9,65 @@ import AppKit
 import Sparkle
 import SwiftUI
 import TransmissionCore
+import os
+
+private let logger = Logger(subsystem: "net.jvacek.TransmissionSwift", category: "App")
 
 @main
 struct TransmissionSwiftApp: App {
     @State private var profileStore: ServerProfileStore
+    @State private var mappingStore: OpenMappingStore
     @State private var torrentStore: TorrentStore
     @State private var faviconStore = FaviconStore()
+    @State private var geoipStore = GeoIPStore()
     @State private var tagColorStore: TagColorStore
     private let snapshotPath: String?
+    private let disableOnboarding: Bool
     private let updateService = UpdateService()
 
     init() {
-        UserDefaults.standard.register(defaults: ["pollingIntervalSeconds": 5.0])
+        UserDefaults.standard.register(defaults: [
+            PreferenceKeys.pollingIntervalSeconds: PollingIntervals.defaultRefresh,
+            PreferenceKeys.incrementalPollingIntervalSeconds: PollingIntervals.defaultIncremental,
+            PreferenceKeys.showAddDialogBeforeAdding: true,
+            PreferenceKeys.deleteTorrentFileAfterAdding: false,
+            PreferenceKeys.confirmRemove: true,
+            PreferenceKeys.badgeAppIcon: false,
+            PreferenceKeys.sendCrashReports: false,
+        ])
         #if PRERELEASE
-        UserDefaults.standard.register(defaults: ["includePrereleases": true])
+        UserDefaults.standard.register(defaults: [PreferenceKeys.includePrereleases: true])
         #endif
 
         let args = CommandLine.arguments
+
+        // Start opt-in crash reporting as early as possible so launch-time
+        // crashes are captured; inert until a DSN and the user preference exist.
+        CrashReporting.apply()
+
+        // Debug-only crash-reporting verification (see CrashReporting): the
+        // first flag crashes after startup, the second only boots the SDK so a
+        // previously captured crash uploads. Neither persists anything.
+        #if DEBUG
+        if args.contains("--crash-test") {
+            CrashReporting.startForTesting()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { CrashReporting.crashForTesting() }
+        } else if args.contains("--crash-test-send") {
+            CrashReporting.startForTesting()
+        }
+        #endif
+
         let snapshotPath = Self.parseSnapshotPath(from: args)
         self.snapshotPath = snapshotPath
 
         // --- profile store
-        // Snapshot replay implies ephemeral profiles so the synthetic
-        // "Snapshot — <name>" profile never lands in the real servers.json.
+        // Snapshot replay implies ephemeral profiles so the synthetic replay
+        // profile never lands in the real servers.json.
         let ephemeral = args.contains("--ephemeral-profiles") || snapshotPath != nil
+        // Snapshot replay, ephemeral test profiles and the crash-test hooks are
+        // non-interactive: never interrupt them with the first-run consent splash.
+        self.disableOnboarding =
+            ephemeral || args.contains("--crash-test") || args.contains("--crash-test-send")
         let profileURL: URL
         if ephemeral {
             profileURL = FileManager.default.temporaryDirectory
@@ -44,21 +79,37 @@ struct TransmissionSwiftApp: App {
                 ?? FileManager.default.temporaryDirectory.appendingPathComponent("servers.json")
         }
         let profileStore = ServerProfileStore(fileURL: profileURL)
-        if let snapshotPath {
-            let label =
-                URL(fileURLWithPath: snapshotPath).deletingPathExtension().lastPathComponent
-            try? profileStore.add(
-                ServerProfile(label: "Snapshot — \(label)", host: "snapshot", port: 0)
-            )
+
+        // --- mapping store
+        // App-wide "Open with…" mappings. First-run migration imports the
+        // per-server mappings from servers.json, scoped to their server, so
+        // behaviour is unchanged. Ephemeral/snapshot runs use a throwaway file
+        // and never migrate.
+        let mappingURL: URL
+        if ephemeral {
+            mappingURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ephemeral-profiles-\(UUID().uuidString)", isDirectory: true)
+                .appendingPathComponent("mappings.json")
+        } else {
+            mappingURL =
+                (try? OpenMappingStore.defaultFileURL())
+                ?? FileManager.default.temporaryDirectory.appendingPathComponent("mappings.json")
         }
-        self._profileStore = State(wrappedValue: profileStore)
+        let mappingStore: OpenMappingStore
+        if !ephemeral, let serversURL = try? ServerProfileStore.defaultFileURL() {
+            mappingStore = OpenMappingStore(fileURL: mappingURL, migratingFrom: serversURL)
+        } else {
+            mappingStore = OpenMappingStore(fileURL: mappingURL)
+        }
+        self._mappingStore = State(wrappedValue: mappingStore)
 
         // --- torrent store
         // Snapshot mode decodes the captured file through SnapshotTorrentService
-        // (read-only, frozen). Otherwise we hand the store an empty mock — the real
-        // RPC-backed service lands in slice 7 of doc/ui-buildout.md.
-        let service: any TorrentService
+        // (read-only, frozen). Otherwise the store starts on an empty mock; the
+        // connect flow swaps in the live RPC service via ConnectionCoordinator.
+        let service: any TorrentReading
         var snapshotTagColors: [String: TagColor] = [:]
+        var snapshotServerName: String?
         if let snapshotPath {
             do {
                 let snapshotService = try SnapshotTorrentService(
@@ -66,16 +117,38 @@ struct TransmissionSwiftApp: App {
                 // Colours are captured in the snapshot, so replay shows the same
                 // assignments without touching the user's real prefs.
                 snapshotTagColors = snapshotService.tagColors
+                snapshotServerName = snapshotService.displayServerName
                 service = snapshotService
             } catch {
-                NSLog("Snapshot load failed: \(error.localizedDescription)")
-                service = MockTorrentService(initial: [])
+                logger.error(
+                    "Snapshot load failed: \(error.localizedDescription, privacy: .public)")
+                service = EmptyTorrentService()
             }
         } else {
-            service = MockTorrentService(initial: [])
+            service = EmptyTorrentService()
         }
         let store = TorrentStore(service: service)
         self._torrentStore = State(wrappedValue: store)
+
+        // Snapshot replay seeds a synthetic profile so the title bar / server
+        // switcher have a label. Prefer the name the snapshot carries (tests set a
+        // friendly one); fall back to the filename for captures that don't.
+        if let snapshotPath {
+            let filename =
+                URL(fileURLWithPath: snapshotPath).deletingPathExtension().lastPathComponent
+            let label =
+                snapshotServerName.flatMap { $0.isEmpty ? nil : $0 } ?? "Snapshot — \(filename)"
+            try? profileStore.add(ServerProfile(label: label, host: "snapshot", port: 0))
+        }
+        self._profileStore = State(wrappedValue: profileStore)
+
+        // Shared with the App Intents (see AppEnvironment). Snapshot replay is
+        // the deterministic dataset the intent tests run against.
+        AppEnvironment.register(
+            AppEnvironment(
+                mode: snapshotPath != nil ? .snapshot : .live,
+                profileFileURL: profileURL,
+                snapshotFileURL: snapshotPath.map { URL(fileURLWithPath: $0) }))
 
         let tagColorStore = TagColorStore()
         if !snapshotTagColors.isEmpty {
@@ -97,28 +170,35 @@ struct TransmissionSwiftApp: App {
 
     var body: some Scene {
         Window("TransmissionSwift", id: "main") {
-            ContentView(snapshotMode: snapshotPath != nil)
-                .environment(profileStore)
-                .environment(torrentStore)
-                .environment(faviconStore)
-                .environment(tagColorStore)
-                .onOpenURL { url in
-                    // Fires for both magnet: links (CFBundleURLTypes) and
-                    // double-clicked / "Open With" .torrent files
-                    // (CFBundleDocumentTypes). Reuses the same add-sheet flow as
-                    // drag-and-drop in MainWindow.
-                    if url.scheme == "magnet" {
-                        torrentStore.openAddSheet(magnetMode: true, prefilledURL: url)
-                    } else if url.isFileURL {
-                        torrentStore.openAddSheet(prefilledURL: url)
-                    }
+            ContentView(
+                store: torrentStore,
+                snapshotMode: snapshotPath != nil,
+                disableOnboarding: disableOnboarding
+            )
+            .environment(profileStore)
+            .environment(mappingStore)
+            .environment(torrentStore)
+            .environment(faviconStore)
+            .environment(geoipStore)
+            .environment(tagColorStore)
+            .onOpenURL { url in
+                // transmissionswift://<serverUUID>/<torrentID> opens the app on a
+                // torrent (the URL form of TorrentEntity); magnet: links and
+                // double-clicked / "Open With" .torrent files go through the add
+                // flow, honouring the "Show dialog before adding" pref.
+                if let request = OpenRequest(deepLink: url) {
+                    OpenRequestBus.shared.request = request
+                } else {
+                    torrentStore.addFromExternalURL(url)
                 }
+            }
         }
         .commands {
             FileCommands(torrentStore: torrentStore)
             AboutCommands(updateService: updateService)
             PreferencesCommands()
             ServerCommands(profileStore: profileStore)
+            HelpCommands(torrentStore: torrentStore)
         }
 
         Window("About TransmissionSwift", id: "about") {
@@ -129,17 +209,24 @@ struct TransmissionSwiftApp: App {
 
         // A plain Window (not the Settings scene): on macOS 26 the Settings scene
         // always renders an unremovable "<App name> Settings" centered title. A
-        // regular titled window hosting PreferencesView's NavigationSplitView gets
-        // the Xcode-Settings look for free — traffic lights inside the sidebar's
-        // glass card, and the pane title in the title bar via .navigationTitle.
-        Window("Preferences", id: "preferences") {
+        // regular window hosting PreferencesView's NavigationSplitView gets the
+        // Xcode-Settings look — traffic lights inside the sidebar's glass card.
+        // The title is blank: the detail column draws its own pane title in a
+        // material inset bar, so a window title would just double it.
+        Window("", id: "preferences") {
             PreferencesView()
                 .environment(profileStore)
+                .environment(mappingStore)
                 .environment(faviconStore)
+                .environment(geoipStore)
                 .environment(torrentStore)
                 .environment(tagColorStore)
         }
-        .defaultSize(width: 700, height: 520)
+        // Compact: the toolbar row collapses to a slim lights-only strip (the
+        // title is blank and there are no items), instead of a tall empty bar
+        // above the pane title.
+        .windowToolbarStyle(.unifiedCompact)
+        .defaultSize(width: 880, height: 580)
     }
 }
 
@@ -198,6 +285,58 @@ private struct PreferencesCommands: Commands {
     }
 }
 
+// MARK: - Help commands
+
+/// Opens the GitHub bug-report form with the app and daemon versions
+/// pre-filled where known. Shared by the Help menu item and the status-bar
+/// ladybug button — both read through this one URL builder.
+enum BugReport {
+    static var appVersion: String? {
+        let info = Bundle.main.infoDictionary
+        let short = (info?["CFBundleShortVersionString"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let build = (info?["CFBundleVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        if let short, let build {
+            return "\(short) (\(build))"
+        }
+        return short ?? build
+    }
+
+    static func url(daemonVersion: String?) -> URL? {
+        var components = URLComponents(
+            string: "https://github.com/jvacek/TransmissionSwift/issues/new")
+        var items = [URLQueryItem(name: "template", value: "bug_report.yml")]
+        if let appVersion {
+            items.append(URLQueryItem(name: "app-version", value: appVersion))
+        }
+        if let daemonVersion, !daemonVersion.isEmpty {
+            items.append(URLQueryItem(name: "daemon-version", value: daemonVersion))
+        }
+        items.append(URLQueryItem(name: "macos-version", value: macOSVersion))
+        components?.queryItems = items
+        return components?.url
+    }
+
+    private static var macOSVersion: String {
+        ProcessInfo.processInfo.operatingSystemVersionString
+    }
+}
+
+private struct HelpCommands: Commands {
+    let torrentStore: TorrentStore
+    @Environment(\.openURL) private var openURL
+
+    var body: some Commands {
+        CommandGroup(after: .help) {
+            Button("Report Bug…") {
+                if let url = BugReport.url(daemonVersion: torrentStore.session.daemonVersion) {
+                    openURL(url)
+                }
+            }
+            .accessibilityIdentifier("help.reportBug")
+        }
+    }
+}
+
 // MARK: - Server commands
 
 private struct ServerCommands: Commands {
@@ -229,7 +368,7 @@ private struct ServerCommands: Commands {
             }
             Divider()
             Button("Server Settings…") {
-                UserDefaults.standard.set(PrefsTab.servers.rawValue, forKey: "prefsPendingNavTab")
+                UserDefaults.standard.set(PrefsTab.servers.rawValue, forKey: PreferenceKeys.prefsPendingNavTab)
                 openWindow(id: "preferences")
             }
         }

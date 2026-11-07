@@ -53,12 +53,23 @@
 			</dict>
 		</dict>
 	</array>
+	<!-- Opt-in crash reporting. Filled from the SENTRY_DSN build setting at
+	     build time; an empty value leaves the SDK off. See CrashReporting.swift. -->
+	<key>SentryDSN</key>
+	<string>$(SENTRY_DSN)</string>
 	<!-- Sparkle auto-update settings -->
 	<key>SUFeedURL</key>
 	<string>https://jvacek.github.io/TransmissionSwift/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>yOx9DTZyOyDSed94L5kAT1cXbakXVwJGcCLXZEr/uQg=</string>
 	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<!-- Sandboxed app: let the Installer XPC service (embedded in
+	     Sparkle.framework) run the install outside the sandbox. Without this
+	     Sparkle installs in-process, and the sandbox denies the required
+	     authorization right ("Failed to gain authorization required to
+	     update target"). Needs the -spks/-spki mach-lookup entitlements. -->
+	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<!-- Handle magnet: links opened from a browser. Routed through the same
 	     .onOpenURL handler as .torrent files. -->
@@ -72,6 +83,16 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>magnet</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Torrent Deep Link</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>transmissionswift</string>
 			</array>
 		</dict>
 	</array>

@@ -1,9 +1,10 @@
 import SwiftUI
 import TransmissionCore
+import TransmissionTestSupport
 
 /// Dedicated popup for editing a torrent's labels. Prefills with the labels
 /// common to the whole target set (empty when the selection shares none) and
-/// applies via `store.setLabels` — which replaces the full set on every
+/// applies via `store.actions.setLabels` — which replaces the full set on every
 /// targeted torrent, matching Transmission's `torrent-set labels` semantics.
 struct EditLabelsSheet: View {
     @Environment(TorrentStore.self) private var store
@@ -42,7 +43,7 @@ struct EditLabelsSheet: View {
     }
 
     private var initialLabels: [String] {
-        let selected = store.torrents.filter { ids.contains($0.id) }
+        let selected = store.list.torrents.filter { ids.contains($0.id) }
         guard let first = selected.first else { return [] }
         return selected.dropFirst().reduce(first.labels) { common, torrent in
             common.filter(torrent.labels.contains)
@@ -50,7 +51,7 @@ struct EditLabelsSheet: View {
     }
 
     private var suggestions: [String] {
-        store.facets.labels.map(\.name)
+        store.list.facets.labels.map(\.name)
     }
 
     private var subtitle: String {
@@ -60,7 +61,7 @@ struct EditLabelsSheet: View {
     private func apply() async {
         isSaving = true
         defer { isSaving = false }
-        await store.setLabels(ids, labels: tags)
+        await store.actions.setLabels(ids, labels: tags)
         isPresented = false
     }
 }

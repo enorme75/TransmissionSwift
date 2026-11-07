@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TransmissionTestSupport
 
 @testable import TransmissionCore
 
@@ -182,7 +183,7 @@ struct MappingTemplateTests {
                 server: server,
                 password: "p@ss:word"
             )?.absoluteString
-                == "https://admin:p%40ss:word@nas.local/dl/My%20Torrent")
+                == "https://admin:p%40ss%3Aword@nas.local/dl/My%20Torrent")
     }
 
     @Test("{password-encoded} survives a slash that would break a raw password")
@@ -196,6 +197,19 @@ struct MappingTemplateTests {
                 password: "p/ss word"
             )?.absoluteString
                 == "https://admin:p%2Fss%20word@nas.local/dl")
+    }
+
+    @Test("raw {password} with a stray % falls back without trapping")
+    func rawPasswordWithStrayPercent() {
+        let server = ServerProfile(label: "x", host: "nas.local", username: "admin")
+        #expect(
+            expand(
+                "https://{user}:{password}@{host}/dl",
+                downloadFolder: "/dl",
+                server: server,
+                password: "100%"
+            )?.absoluteString
+                == "https://admin:100%25@nas.local/dl")
     }
 
     @Test("nil password substitutes as empty for both password placeholders")
@@ -557,5 +571,12 @@ struct MappingTemplateMockOutputsTests {
             expandedURL(cyberduck, torrent: debian, defaultDownloadDirectory: downloads, file: file)
                 == "sftp://dev@nas.local/Linux ISOs/Debian 12.6 — netinst (multi-arch) collection/debian-12.6.0-amd64-netinst.iso"
         )
+    }
+
+    @Test("needsPassword matches both password placeholders but nothing else")
+    func needsPasswordPlaceholders() {
+        #expect(MappingTemplate.needsPassword("ftp://{user}:{password}@host/"))
+        #expect(MappingTemplate.needsPassword("ftp://{user}:{password-encoded}@host/"))
+        #expect(!MappingTemplate.needsPassword("ftp://{user}@{host}:{port}/{file}"))
     }
 }

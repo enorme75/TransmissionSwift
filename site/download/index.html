@@ -1,0 +1,63 @@
+{% extends "_layouts/base.html" %}
+{% set page = "download" %}
+{% set path = "/download/" %}
+{% set sitemap = {"changefreq": "monthly", "priority": "0.9"} %}
+{% set title = "Download TransmissionSwift for macOS" %}
+{% set description = "Download TransmissionSwift, a free native Transmission remote for macOS. Universal (Apple Silicon + Intel) or Apple Silicon only, plus how to open the unsigned build." %}
+{% set og_description = "Free · macOS 26+ · Universal or Apple Silicon only. One-time Gatekeeper approval to open." %}
+{% block head %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "TransmissionSwift", "item": "https://transmissionswift.jvacek.eu/" },
+    { "@type": "ListItem", "position": 2, "name": "Download", "item": "https://transmissionswift.jvacek.eu/download/" }
+  ]
+}
+</script>
+{% endblock %}
+{% block main_class %} prose{% endblock %}
+{% block content %}
+  <p class="crumbs"><a href="/">TransmissionSwift</a> / Download</p>
+
+  <h1>Download TransmissionSwift</h1>
+  <p>Free · macOS 26+ · ~9&nbsp;MB. Pick a build:</p>
+
+  <div class="actions space-y">
+    <a class="btn" id="dl-universal" href="{{ download_url_universal }}">Download Universal</a>
+    <a class="btn secondary" id="dl-arm64" href="{{ download_url_arm64 }}">Download Apple Silicon</a>
+  </div>
+  <p class="note">{% if version %}Latest release {{ version }} · {% endif %}<a href="/changelog/">Changelog</a></p>
+  <p class="note">The Universal build runs on any Mac and is the safe choice. The
+    Apple Silicon build is smaller and fine on any M-series Mac. Both
+    self-update via Sparkle.</p>
+
+  <h2>How to open it</h2>
+  <p>Releases are currently unsigned, so macOS Gatekeeper blocks the first
+    launch. It is a one-time step per install:</p>
+  <ol class="steps">
+    <li>Unzip the download and move <code>TransmissionSwift.app</code> to your
+      Applications folder (or run it straight from Downloads).</li>
+    <li>Open the app. macOS refuses it, so choose <em>Done</em>, <strong>not</strong>
+      <em>Move to Trash</em>.
+      <img src="/imgs/security_bypass/step1.png" alt="macOS Gatekeeper blocking the unsigned TransmissionSwift app on first launch" width="744" height="724" loading="lazy" decoding="async">
+    </li>
+    <li>Open <em>System Settings → Privacy &amp; Security</em>, scroll to the
+      Security section and click <em>Open Anyway</em> (the button stays for
+      about an hour).
+      <img src="/imgs/security_bypass/step2.png" alt="macOS Privacy and Security settings showing the Open Anyway button for TransmissionSwift" width="1200" height="1051" loading="lazy" decoding="async">
+    </li>
+    <li>Confirm with your password and open the app again.</li>
+  </ol>
+  <p>The same steps are in Apple's
+    <a href="https://support.apple.com/en-gb/guide/mac-help/mh40616/mac">support
+    article</a> and the project
+    <a href="https://github.com/jvacek/TransmissionSwift#how-to-open-it">README</a>.
+    Once it opens, the
+    <a href="/guides/remote-transmission-macos/">remote setup guide</a> shows how
+    to connect it to your daemon.</p>
+
+  <p>Prefer to browse all releases? See the
+    <a href="https://github.com/jvacek/TransmissionSwift/releases">GitHub releases</a>.</p>
+{% endblock %}

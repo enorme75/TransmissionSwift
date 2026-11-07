@@ -31,18 +31,52 @@ TransmissionSwift/                          ← Xcode project root
     └── TransmissionCore/                   ← domain models, storage, services
         ├── Package.swift
         ├── Sources/TransmissionCore/
+        ├── Sources/TransmissionTestSupport/  ← mocks/fixtures, not in the product
         └── Tests/TransmissionCoreTests/
 ```
 
 **Layering rules:**
 - `TransmissionRPC` depends on **Foundation only** (plus `OSLog` for logging — fine, it's platform-agnostic). No SwiftUI, no AppKit, no SwiftData.
-- `TransmissionCore` depends on `TransmissionRPC` + Foundation + (optionally) SwiftData/Security for storage.
-- The app target depends on both packages and contains **only** SwiftUI views and view models.
+- `TransmissionCore` depends on `TransmissionRPC` + Foundation + (optionally) SwiftData/Security for storage. The package also builds a second, non-product target, `TransmissionTestSupport`, holding the mocks/fixtures; only tests and previews link it.
+- The app target depends on both packages (and `TransmissionTestSupport`, for previews). It holds SwiftUI views and view models, plus thin app-only services that don't belong in Core — connection coordination, crash reporting, favicon/tag stores, App Intents.
 
 **Why three layers:**
 - `TransmissionRPC` is a pure protocol implementation — testable without a UI, swappable, mockable via protocol.
 - `TransmissionCore` is the "service layer" — server profiles, credentials, polling orchestration, the things every UI surface will need.
 - The app target stays thin: views observe view models, view models call into core, core calls into RPC.
+
+### Store layer
+
+`TorrentStore` (TransmissionCore) is the single `@Observable` object the app
+injects into the environment. It is a coordinator, not a god object: it owns the
+connection state machine and the poll loop, and composes focused collaborators
+that each own one concern.
+
+| Collaborator | Concern |
+|---|---|
+| `list` (`TorrentListModel`) | torrents, facets, visible rows, selection, search, filters, sort |
+| `session` (`SessionModel`) | session settings, turtle speed, free space, version, stats, port |
+| `inspector` (`InspectorModel`) | inspector detail, visibility, tab |
+| `actions` (`TorrentActionModel`) | every torrent mutation + the staged removal |
+| `ui` (`TorrentSheetState`) | sheet presentation state |
+
+Views read `store.<collaborator>.<member>`; the poll loop distributes snapshots
+to the models. The inspector is the exception: its files and peers come from
+`InspectorModel.poll()`, which rides each snapshot, because the list snapshot
+carries no `files` or `peers`. User-action failures funnel through the
+coordinator's `lastActionError`. The layout and wiring are described in
+`doc/torrentstore.md`.
+
+The services behind the store are split by capability: `TorrentReading` (always
+available) and `TorrentMutating` (live and mock services only). Callers resolve
+the optional mutation half with `TorrentReading.mutations` rather than a
+repeated `as?` downcast. A read-only source (snapshot replay) implements only
+`TorrentReading`; `EmptyTorrentService` is the production no-server placeholder.
+
+Choosing *which* service to install is app-only and lives in
+`ConnectionCoordinator` (app target), not the view: it reads the Keychain off
+the main actor, builds the service and drives `TorrentStore` plus the shared
+`AppEnvironment` that App Intents read.
 
 ## 3. RPC client design
 
@@ -70,15 +104,51 @@ TransmissionSwift/                          ← Xcode project root
 - View models are `@Observable` (the macro, not `ObservableObject`).
 - SwiftUI lifecycle driven by `.task { }` modifiers.
 - The RPC client is an `actor` to serialize session-ID state.
+- The app target builds with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so
+  views, view models and app services are main-actor by default. Pure logic
+  (the table row/selection/sort/menu helpers, process checks) is marked
+  `nonisolated` so it can be unit-tested without the main actor.
+- **One language mode everywhere.** App, test targets and packages all build in
+  Swift 6 mode with the "Approachable Concurrency" features
+  (`NonisolatedNonsendingByDefault`, `InferIsolatedConformances`) plus
+  `MemberImportVisibility`. The packages set these via a shared `swiftSettings`
+  constant in each `Package.swift`; keep it in step with the Xcode build settings.
+- **Isolation differs by layer, on purpose.** Only the app target defaults to
+  `MainActor`. The packages default to nonisolated: `TransmissionRPC` must never
+  touch the main thread, and `TransmissionCore` marks its UI-facing stores
+  `@MainActor` explicitly. Moving a type from the app into Core therefore means
+  adding `@MainActor` if it is UI state; leaving it off is a compile error at
+  the call sites, not a silent change.
+- Heavy work stays on actors (`URLSessionTransmissionClient`, `RPCTorrentService`).
+  With `NonisolatedNonsendingByDefault`, a plain `nonisolated async` function runs
+  on its caller's actor — often the main actor — so CPU-bound helpers outside an
+  actor need `@concurrent`.
 
 ## 5. Polling strategy
 
-- **Default interval: 5 seconds**, while the relevant UI is visible.
-- **Adaptive** based on visibility:
-  - When the window is in the foreground and the torrent list is visible → 5s.
-  - When the window is backgrounded or the user is on a non-list screen (settings, etc.) → slow down or pause.
-- Implement as an `AsyncStream` driven by a `Task` that loops with `Task.sleep`. The poller belongs in `TransmissionCore`, started/stopped by view models via `.task { }` lifecycles.
-- Future: scale the rate based on whether torrents are actively transferring vs. all idle.
+One loop in `RPCTorrentService` runs two cadences and sends a complete array each
+tick:
+
+- **Full refresh** (`pollingIntervalSeconds`, default 15s): the whole list. It
+  reconciles membership and the daemon's order, and covers fields the daemon
+  doesn't mark as changed.
+- **Incremental refresh** (`incrementalPollingIntervalSeconds`, default 1s):
+  `ids: "recently-active"`, the daemon's changed set from the last 60 seconds
+  plus the ids removed in it, merged into the cached full snapshot. This is the
+  protocol's only incremental primitive.
+
+`PollingIntervals` holds the bounds and defaults shared with the preferences
+pane: the incremental interval is clamped to 1...45 seconds (inside the daemon's
+window, with jitter headroom) and to the full interval. Polling pauses when the
+app is inactive or the window closes, and a new stream starts with a full
+refresh. Editing an interval posts `PollingIntervals.changed`, which cancels the
+current sleep so the new value applies immediately.
+
+The inspector rides the same tick: `InspectorModel.poll()` fetches the selected
+torrent's files and peers only when its list snapshot changed, so a paused
+torrent is not refetched every second.
+
+Implemented as an `AsyncStream` fed by a `Task` that sleeps between ticks.
 
 ## 6. Storage
 
@@ -88,9 +158,13 @@ What we persist locally — the daemon owns everything else.
 |---|---|---|
 | Server profiles (host, port, RPC path, username, label) | JSON file in App Support | Plain config, easy to back up |
 | Server passwords | **Keychain** | Non-negotiable — never plain text |
-| UI preferences (column order, sort, filters) | `@AppStorage` / `UserDefaults` | Standard for prefs |
+| UI preferences (column order/widths, sort, inspector width, sidebar expansion) | `@AppStorage` / `UserDefaults` | Standard for prefs |
 | Last selected server ID | `@AppStorage` | Restore-on-launch |
 | Torrent list cache | Not persisted (yet) | Live data — refetch on launch |
+
+The table's sort preference is read and written through a
+`TablePreferencesStoring` seam over `UserDefaults`, so the list model can be
+tested without the shared defaults.
 
 **Remove from default template:** the boilerplate `Item.swift` model and the `ModelContainer` setup in `TransmissionSwiftApp.swift`. We are not using SwiftData on day one.
 
@@ -103,9 +177,13 @@ What we persist locally — the daemon owns everything else.
 ## 8. Testing
 
 - **Framework:** Swift Testing (`@Test`, `#expect`). XCUIAutomation for UI.
-- **RPC layer:** test against canned HTTP responses via a custom `URLProtocol` stub. Must cover the 409-then-retry handshake, auth failure, malformed JSON.
-- **Core layer:** the `TransmissionClient` protocol means we can inject a fake client for service-level tests.
-- **App layer:** SwiftUI views tested with previews + targeted UI tests for golden paths.
+- **RPC layer:** canned HTTP responses via a custom `URLProtocol` stub — 409-then-retry handshake, auth failure, malformed JSON.
+- **Core layer:** the `TransmissionClient` protocol injects a fake client for service-level tests, and the store's main collaborators each have a direct suite. Mocks/fixtures live in the `TransmissionTestSupport` target.
+- **App layer:** pure logic extracted from the views (table row store, selection, sort, row-menu spec, cell-content builder, formatters) is unit-tested directly in `TransmissionSwiftTests`, as is `ConnectionCoordinator` with an injected Keychain reader, service builder and `AppEnvironment`. Views themselves are covered by previews and UI tests.
+- **UI:** a daemon-free snapshot-replay test (`just test-snapshot`) and an opt-in E2E golden path (`TEST_RUNNER_TRANSMISSION_E2E=1`, needs a live local daemon).
+- Package tests run with `-warnings-as-errors` (see the decision log).
+- **Known gaps:** `session-get` and `torrent-add` fixtures are captured from a live daemon; `torrent-get` (list + inspector), `torrent-set`, `torrent-start/stop/remove` and `free-space` are still hand-made JSON in the tests. Recapture from the dev daemon when the RPC surface is next touched.
+- The E2E XCUITest suite (`TEST_RUNNER_TRANSMISSION_E2E=1`) has not been re-run against the live daemon since the RPC layer landed; only `testAddServerAndTestConnection` is daemon-gated today.
 
 ## 9. Open questions (decide as they come up)
 
@@ -122,7 +200,7 @@ What we persist locally — the daemon owns everything else.
 | 2026-06-10 | Three-layer module split via local Swift Packages | Active |
 | 2026-06-10 | Hand-rolled RPC client; reject mogeko/transmission-rpc dependency | Active |
 | 2026-06-10 | async/await + `@Observable`, no Combine | Active |
-| 2026-06-10 | Adaptive polling, default 5s | Active |
+| 2026-10-25 | Two-cadence polling: full list every 15s (default), the daemon's `recently-active` set every 1s (default) merged into one snapshot; the inspector detail rides that tick and refreshes only when the selected torrent changed | Active |
 | 2026-06-10 | Multi-server first-class; switcher in UI | Active |
 | 2026-06-10 | Keychain for passwords, JSON file for profiles | Active |
 | 2026-06-10 | Drop SwiftData scaffolding from the default template | Active |
@@ -132,5 +210,13 @@ What we persist locally — the daemon owns everything else.
 | 2026-08-21 | User-selected file access upgraded to read-write (`ENABLE_USER_SELECTED_FILES = readwrite`) so the Developer pane's snapshot save panel can write | Active |
 | 2026-06-10 | warnings-as-errors enforced via CI flags, not Package.swift (conflicts with Xcode's `-suppress-warnings` for package deps) | Active |
 | 2026-06-10 | E2E golden-path XCUITest, opt-in via `TEST_RUNNER_TRANSMISSION_E2E=1` (needs a live local daemon) | Active |
-| 2026-06-11 | Mock-first UI buildout: views consume `protocol TorrentService` (TransmissionCore), built against `MockTorrentService` first; `RPCTorrentService` swaps in last with zero view changes. Plan + progress in `doc/ui-buildout.md` | Active |
-| 2026-06-0? | Split RPC client files per method group
+| 2026-06-11 | Mock-first UI buildout: views consume `protocol TorrentService` (TransmissionCore), built against `MockTorrentService` first; `RPCTorrentService` swaps in last with zero view changes | Done |
+| 2026-06-0? | Split RPC client files per method group | Active |
+| 2026-10-08 | `TorrentStore` is a coordinator over focused `@Observable` collaborators (`list`/`session`/`inspector`/`actions`/`ui`), not a god object; layout in `doc/torrentstore.md` | Active |
+| 2026-10-08 | `TorrentService` split into `TorrentReading` + `TorrentMutating`; callers resolve the mutation half via `TorrentReading.mutations` | Active |
+| 2026-10-08 | Connect flow extracted from `ContentView` into an app-target `ConnectionCoordinator` (Keychain + factory + `AppEnvironment`), with injected dependencies | Active |
+| 2026-10-08 | Table sort persists through a `TablePreferencesStoring` seam; the persisted value is the single source of truth | Active |
+| 2026-10-08 | Mocks/fixtures moved out of `TransmissionCore` into a `TransmissionTestSupport` target; `EmptyTorrentService` is the production no-server placeholder | Active |
+| 2026-10-08 | AppKit decomposition: the cell view and the table `Coordinator` split into focused files and pure types; layout in `doc/appkit-decomposition.md` | Active |
+| 2026-10-08 | `TransmissionCore` sources grouped into `Models/`/`Services/`/`Stores/`/`Snapshot/`/`Mapping/` subfolders (navigation only; SwiftPM compiles the target flat). `TransmissionRPC` stays flat at 7 files | Active |
+| 2026-10-09 | Peer country flags: `GeoIPService` (Core) downloads DB-IP IP-to-Country Lite CSV, caches under App Support, re-checks on a user-selectable cadence (default monthly) using conditional GET, and answers IPv4 lookups; gunzip via a `CZlib` system-library shim (system libz, not a third-party package). `GeoIPStore` (app) resolves at the view; ISO code → regional-indicator emoji | Active |

@@ -1,5 +1,7 @@
+import AppKit
 import SwiftUI
 import TransmissionCore
+import TransmissionTestSupport
 
 private enum Layout {
     static let sidebarMin: CGFloat = 180
@@ -15,10 +17,14 @@ private enum Layout {
 struct MainWindow: View {
     @Environment(TorrentStore.self) private var store
     @Environment(ServerProfileStore.self) private var profileStore
-    @Environment(\.openSettings) private var openSettings
-    @AppStorage("prefsPendingNavTab") private var pendingNavTab: Int = -1
-    @AppStorage("inspectorWidth") private var storedInspectorWidth: Double = Double(Layout.inspectorIdeal)
+    @Environment(ConnectionCoordinator.self) private var connection
+    @Environment(\.openWindow) private var openWindow
+    @AppStorage(PreferenceKeys.prefsPendingNavTab) private var pendingNavTab: String = ""
+    @AppStorage(PreferenceKeys.inspectorWidth) private var storedInspectorWidth: Double = Double(Layout.inspectorIdeal)
+    @AppStorage(PreferenceKeys.startMinimized) private var startMinimized = false
     @State private var windowWidth: CGFloat = Layout.windowMin
+    @State private var didApplyStartMinimized = false
+    @State private var openBus = OpenRequestBus.shared
 
     /// No profile configured — the window shows the "No Servers" onboarding
     /// empty state instead of torrent content.
@@ -35,11 +41,11 @@ struct MainWindow: View {
     }
 
     var body: some View {
-        @Bindable var store = store
+        @Bindable var ui = store.ui
 
         HStack(spacing: 0) {
             splitView
-            if store.inspectorVisible {
+            if store.inspector.isVisible {
                 InspectorResizeHandle(
                     storedWidth: $storedInspectorWidth,
                     clampedWidth: inspectorWidth,
@@ -58,32 +64,70 @@ struct MainWindow: View {
         } action: {
             windowWidth = $0
         }
-        .sheet(isPresented: $store.showAddTorrent) {
+        .onAppear {
+            // "Start minimized": miniaturize once on launch. Done here (rather
+            // than the app delegate) so it targets the actual main window.
+            if startMinimized, !didApplyStartMinimized {
+                didApplyStartMinimized = true
+                NSApp.keyWindow?.miniaturize(nil)
+            }
+        }
+        .onChange(of: hasNoServer) { _, noServer in
+            // The status bar (which owns the Dock badge) is hidden with no
+            // server configured — clear any stale count.
+            if noServer { NSApp.dockTile.badgeLabel = "" }
+        }
+        // Apply (or retry) a pending "open torrent" request from an App Intent.
+        // Retries when the torrent list reloads after a server switch.
+        .task { applyOpenRequest() }
+        .onChange(of: openBus.request) { _, _ in applyOpenRequest() }
+        .onChange(of: store.list.torrents) { _, _ in applyOpenRequest() }
+        .sheet(isPresented: $ui.showAddTorrent) {
             AddTorrentSheet(
-                isPresented: $store.showAddTorrent,
-                initialMagnetMode: store.addTorrentStartInMagnetMode,
-                prefilledURL: store.addTorrentPrefilledURL
+                isPresented: $ui.showAddTorrent,
+                initialMagnetMode: ui.addTorrentStartInMagnetMode,
+                prefilledURL: ui.addTorrentPrefilledURL,
+                serverName: profileStore.activeProfile?.label
             )
         }
-        .sheet(isPresented: $store.showEditLabels) {
+        .sheet(isPresented: $ui.showEditLabels) {
             EditLabelsSheet(
-                isPresented: $store.showEditLabels,
-                ids: store.editLabelsTargetIDs
+                isPresented: $ui.showEditLabels,
+                ids: ui.editLabelsTargetIDs
             )
         }
-        .sheet(isPresented: $store.showSetLocation) {
+        .sheet(isPresented: $ui.showSetLocation) {
             SetLocationSheet(
-                isPresented: $store.showSetLocation,
-                ids: store.setLocationTargetIDs
+                isPresented: $ui.showSetLocation,
+                ids: ui.setLocationTargetIDs,
+                serverName: profileStore.activeProfile?.label
             )
+        }
+        .sheet(isPresented: $ui.showRenameTorrent) {
+            if let id = ui.renameTorrentTargetID {
+                RenameTorrentSheet(isPresented: $ui.showRenameTorrent, id: id)
+            }
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first else { return false }
             let accepted = url.pathExtension == "torrent" || url.scheme == "magnet"
             if accepted {
-                store.openAddSheet(magnetMode: url.scheme == "magnet", prefilledURL: url)
+                store.addFromExternalURL(url)
             }
             return accepted
+        }
+        .confirmationDialog(
+            removeDialogTitle,
+            isPresented: Binding(
+                get: { store.actions.pendingRemoval != nil },
+                set: { if !$0 { store.actions.cancelPendingRemoval() } }
+            ),
+            presenting: store.actions.pendingRemoval
+        ) { _ in
+            Button("Remove", role: .destructive) { store.actions.confirmPendingRemoval() }
+            Button("Cancel", role: .cancel) { store.actions.cancelPendingRemoval() }
+        } message: { pending in
+            Text(removeDialogMessage(for: pending))
         }
         .alert(
             store.lastActionError?.title ?? "Action Failed",
@@ -103,6 +147,7 @@ struct MainWindow: View {
 
     private var splitView: some View {
         @Bindable var store = store
+        @Bindable var list = store.list
         return NavigationSplitView {
             SidebarView()
                 .navigationSplitViewColumnWidth(
@@ -119,7 +164,7 @@ struct MainWindow: View {
                     }
                 }
                 .searchable(
-                    text: $store.searchQuery,
+                    text: $list.searchQuery,
                     placement: .toolbar,
                     prompt: "Search torrents"
                 )
@@ -135,6 +180,47 @@ struct MainWindow: View {
 
     // MARK: - Server switcher
 
+    /// Opens Preferences on the Servers pane. The pane reads
+    /// `prefsPendingNavTab` on appear / on change.
+    private func openServerSettings() {
+        pendingNavTab = PrefsTab.servers.rawValue
+        openWindow(id: "preferences")
+    }
+
+    /// Title / message for the remove confirmation dialog.
+    private var removeDialogTitle: String {
+        guard let pending = store.actions.pendingRemoval else { return "Remove Torrents" }
+        return pending.ids.count == 1 ? "Remove Torrent?" : "Remove \(pending.ids.count) Torrents?"
+    }
+
+    private func removeDialogMessage(for pending: PendingRemoval) -> String {
+        if pending.deleteLocalData {
+            return "The torrents and their downloaded data will be deleted from the server."
+        }
+        return "The torrents will be removed from the list. Downloaded data stays on the server."
+    }
+
+    /// Applies a pending "open torrent" request from an App Intent: switch to
+    /// the owning server, then select the torrent and reveal the inspector.
+    /// Retries (via the `torrents` change) until the torrent has loaded, which
+    /// matters when the request also switches servers; `OpenRequestBus` drops a
+    /// request that never becomes satisfiable.
+    private func applyOpenRequest() {
+        guard let request = openBus.pending() else { return }
+
+        if let serverID = request.serverID, profileStore.activeProfile?.id != serverID {
+            try? profileStore.setActive(serverID)
+            return
+        }
+        guard store.list.torrents.contains(where: { $0.id == request.torrentID }) else { return }
+
+        openBus.request = nil
+        store.list.searchQuery = ""
+        store.list.resetFilters()
+        store.list.selectedTorrentIDs = [request.torrentID]
+        store.inspector.isVisible = true
+    }
+
     private var serverSwitcherMenu: some View {
         Menu {
             ForEach(profileStore.profiles) { profile in
@@ -149,8 +235,7 @@ struct MainWindow: View {
             }
             Divider()
             Button("Server Settings…") {
-                pendingNavTab = 4
-                openSettings()
+                openServerSettings()
             }
         } label: {
             if profileStore.profiles.count > 1 {
@@ -184,20 +269,20 @@ struct MainWindow: View {
             case .disconnected(let reason):
                 disconnectedView(reason: reason)
             case .connected:
-                if !store.searchQuery.isEmpty && store.visibleTorrents.isEmpty {
-                    ContentUnavailableView.search(text: store.searchQuery)
+                if !store.list.searchQuery.isEmpty && store.list.visibleTorrents.isEmpty {
+                    ContentUnavailableView.search(text: store.list.searchQuery)
                         .overlay(alignment: .bottom) {
                             HStack(spacing: 8) {
-                                Button("Clear Search") { store.searchQuery = "" }
+                                Button("Clear Search") { store.list.searchQuery = "" }
                                 Button("Reset Filters") {
-                                    store.searchQuery = ""
-                                    store.resetFilters()
+                                    store.list.searchQuery = ""
+                                    store.list.resetFilters()
                                 }
                             }
                             .buttonStyle(.borderless)
                             .padding(.bottom, 48)
                         }
-                } else if store.torrents.isEmpty {
+                } else if store.list.torrents.isEmpty {
                     noTorrentsView
                 } else {
                     TorrentListView()
@@ -216,7 +301,6 @@ struct MainWindow: View {
                 .fill(.background)
             VStack(spacing: 16) {
                 ProgressView()
-                    .scaleEffect(1.2)
                 Text(message)
                     .font(.headline)
                 Button("Cancel") {
@@ -243,12 +327,12 @@ struct MainWindow: View {
             Text("Could not connect to \(address).\n\(reason)")
         } actions: {
             Button("Reconnect") {
-                store.reconnect()
+                guard let profile else { return }
+                Task { await connection.connect(to: profile) }
             }
             .buttonStyle(.glassProminent)
             Button("Server Settings…") {
-                pendingNavTab = 4
-                openSettings()
+                openServerSettings()
             }
         }
     }
@@ -272,8 +356,7 @@ struct MainWindow: View {
             Text("Add a Transmission server in Settings to connect and start managing torrents.")
         } actions: {
             Button("Add Server…") {
-                pendingNavTab = 4
-                openSettings()
+                openServerSettings()
             }
             .buttonStyle(.glassProminent)
         }
@@ -321,13 +404,19 @@ private struct InspectorResizeHandle: View {
 }
 
 #Preview("No Servers") {
+    let store = TorrentStore(service: MockTorrentService(initial: []))
     let emptyProfiles = ServerProfileStore(
         fileURL: URL.temporaryDirectory.appending(path: "preview-no-servers.json")
     )
     MainWindow()
-        .environment(TorrentStore(service: MockTorrentService(initial: [])))
+        .environment(store)
         .environment(emptyProfiles)
+        .environment(
+            OpenMappingStore(fileURL: URL.temporaryDirectory.appending(path: "preview-mappings.json"))
+        )
         .environment(FaviconStore())
+        .environment(GeoIPStore())
         .environment(TagColorStore())
+        .environment(ConnectionCoordinator(store: store))
         .frame(width: 1100, height: 640)
 }

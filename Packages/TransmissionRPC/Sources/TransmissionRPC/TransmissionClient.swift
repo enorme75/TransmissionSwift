@@ -7,13 +7,15 @@ public protocol TransmissionClient: Sendable {
 
     /// Current and lifetime transfer statistics (`session-stats`).
     func sessionStats() async throws(TransmissionError) -> SessionStats
-    func torrentGet(fields: [String], ids: [Int]?) async throws(TransmissionError) -> TorrentGetResponse
+    func torrentGet(fields: [String], ids: TorrentIDs?) async throws(TransmissionError) -> TorrentGetResponse
 
     /// Send `torrent-start`, `torrent-stop`, or `torrent-verify` for the given IDs.
     func torrentAction(_ method: String, ids: [Int]) async throws(TransmissionError)
     func torrentRemove(ids: [Int], deleteLocalData: Bool) async throws(TransmissionError)
     func torrentSet(_ args: TorrentSetArguments) async throws(TransmissionError)
     func torrentSetLocation(_ args: TorrentSetLocationArguments) async throws(TransmissionError)
+    func torrentRenamePath(_ args: TorrentRenamePathArguments) async throws(TransmissionError)
+        -> TorrentRenamePathResponse
     func torrentAdd(_ args: TorrentAddArguments) async throws(TransmissionError) -> TorrentAddResponse
     func sessionSet(_ args: SessionSetArguments) async throws(TransmissionError)
 

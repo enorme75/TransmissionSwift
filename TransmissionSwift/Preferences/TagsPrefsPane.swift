@@ -1,5 +1,6 @@
 import SwiftUI
 import TransmissionCore
+import TransmissionTestSupport
 
 /// Finder-style tag colour management. Lists every tag in use on the daemon
 /// plus any tag that already has a colour assigned (so colours can be cleared
@@ -10,7 +11,7 @@ struct TagsPrefsPane: View {
     @Environment(TorrentStore.self) private var store
 
     private var tags: [String] {
-        var names = Set(store.facets.labels.map(\.name))
+        var names = Set(store.list.facets.labels.map(\.name))
         names.formUnion(tagColors.coloredLabels)
         return names.sorted()
     }

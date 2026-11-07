@@ -135,6 +135,19 @@ struct TorrentSetArgumentsEncodeTests {
         #expect(emptyJSON["labels"] == nil)
     }
 
+    @Test("trackerList encodes the announce list as one string; absent when nil")
+    func trackerListEncoding() throws {
+        var args = TorrentSetArguments(ids: [3])
+        args.trackerList = "https://a.example/announce\nhttps://b.example/announce\n\nudp://c.example:1337/announce"
+        let json = try encoded(args)
+        #expect(
+            json["trackerList"] as? String
+                == "https://a.example/announce\nhttps://b.example/announce\n\nudp://c.example:1337/announce")
+
+        let absent = TorrentSetArguments(ids: [3])
+        #expect(try encoded(absent)["trackerList"] == nil)
+    }
+
     @Test("bandwidthPriority encodes as -1/0/1 and is absent when nil")
     func bandwidthPriorityEncoding() throws {
         var low = TorrentSetArguments(ids: [3])
@@ -209,6 +222,36 @@ struct TorrentAddArgumentsEncodeTests {
         #expect(json["metainfo"] == nil)
         #expect(json["labels"] == nil)
         #expect(json["paused"] == nil)
+    }
+}
+
+// MARK: - TorrentRenamePathArguments encode / TorrentRenamePathResponse decode
+
+@Suite("TorrentRenamePath encode/decode")
+struct TorrentRenamePathTests {
+    @Test("encodes ids, path, and name with correct keys")
+    func encode() throws {
+        let args = TorrentRenamePathArguments(ids: [5], path: "Old Name", name: "New Name")
+        let data = try JSONEncoder().encode(args)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["ids"] as? [Int] == [5])
+        #expect(json["path"] as? String == "Old Name")
+        #expect(json["name"] as? String == "New Name")
+    }
+
+    @Test("decodes path, name, and id from the response arguments")
+    func decode() throws {
+        let json = """
+            {
+              "result": "success",
+              "arguments": { "id": 5, "path": "Old Name", "name": "New Name" }
+            }
+            """
+        let data = try #require(json.data(using: .utf8))
+        let response = try JSONDecoder().decode(RPCResponse<TorrentRenamePathResponse>.self, from: data)
+        #expect(response.arguments.id == 5)
+        #expect(response.arguments.path == "Old Name")
+        #expect(response.arguments.name == "New Name")
     }
 }
 

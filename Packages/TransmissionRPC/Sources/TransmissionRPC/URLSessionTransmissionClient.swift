@@ -51,7 +51,7 @@ public actor URLSessionTransmissionClient: TransmissionClient {
         try await send(method: "session-stats", arguments: EmptyArguments())
     }
 
-    public func torrentGet(fields: [String], ids: [Int]?) async throws(TransmissionError) -> TorrentGetResponse {
+    public func torrentGet(fields: [String], ids: TorrentIDs?) async throws(TransmissionError) -> TorrentGetResponse {
         try await send(method: "torrent-get", arguments: TorrentGetArguments(fields: fields, ids: ids))
     }
 
@@ -72,6 +72,12 @@ public actor URLSessionTransmissionClient: TransmissionClient {
 
     public func torrentSetLocation(_ args: TorrentSetLocationArguments) async throws(TransmissionError) {
         try await sendAction(method: "torrent-set-location", arguments: args)
+    }
+
+    public func torrentRenamePath(_ args: TorrentRenamePathArguments) async throws(TransmissionError)
+        -> TorrentRenamePathResponse
+    {
+        try await send(method: "torrent-rename-path", arguments: args)
     }
 
     public func torrentAdd(_ args: TorrentAddArguments) async throws(TransmissionError) -> TorrentAddResponse {

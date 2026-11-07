@@ -2,6 +2,132 @@
 
 All notable changes to TransmissionSwift.
 
+---
+
+**Versions on or below 0.6.1 need to be manually updated to 0.6.2 or above**. There was a bug in the updater, and you will need to work around it yourself. My sincere apoologies for the inconvenience.
+
+Please visit the [release page](https://github.com/jvacek/TransmissionSwift/releases), download TransmissionSwift and replace the current install.
+
+---
+
+## 0.7.2
+
+3rd Nov 2026
+
+- Modify trackers from torrent inspector (add, remove, move, change)
+
+## 0.7.1
+
+25th Oct 2026
+
+- Fix Inspector's file progress and tracker stats not updating
+- Add an incremental refresh interval, move the full refresh default to 15 seconds
+- Show a country flag next to each peer in the torrent inspector
+  - Local lookups against cached DB
+  - Refresh toggle in settings
+
+## 0.7.0
+
+9th Oct 2026
+
+- Add App Intents support
+  - Adds TransmissionSwift to Shortcuts.app
+    - Get server stats
+    - Manage torrents (adding, removing, verifying, re-announcing)
+    - Change speed limits server/torrent-wide
+  - Allows control from Spotlight and non-AI Siri
+- Fix definiton of "Active" status
+- Add opt-in for crash reporting
+- Fix Favicon cache behaviour to an actual request cache
+- Move file mappings to Application settings as app-wide entries
+  - Each mapping can apply to all servers, all local servers, all remote servers, or only selected ones
+  - Existing per-server mappings are migrated on first launch; identical ones merge into one entry scoped to the servers they were on, or all servers
+- Add donation link to the status bar
+  - Add option to hide it (and also the bug report link)
+- Major refactor behind the scenes
+- Thin down the release binaries
+
+## 0.6.4
+
+3rd Oct 2026
+
+- Add option to remove .torrent files after deletion
+- Persist the .torrent delete option from settings and have the add sheet read from it
+
+## 0.6.3
+
+3rd Oct 2026
+
+- Label the universal binary release
+- Separate appcasts for universal and arm64 releases
+  - **If you used the auto-updater from an arm64 release, it installed the universal over it, just FYI**
+
+## 0.6.2
+
+1st Oct 2026
+
+- Fix in-app updates failing to install on sandboxed builds (Sparkle's Installer XPC service was never enabled).
+  - Note: **versions ≤ 0.6.1 must update to this release manually once**; automatic updates resume after that.
+
+## 0.6.1
+
+25th septh 2026
+
+- Implement torrent renaming
+
+## 0.6.0
+
+24th septh 2026
+
+- Split settings page into two: Application and server settings
+- Implement server settings
+- Fix UI bugs in settings pages
+
+## 0.5.6
+
+24th Sept 2026
+
+- Add a button and menu item to open a new github issue with the versions pre-filled
+- Fix the seedcount column
+- Preserve inspector closed/open state
+- Fix the "Hide this column" function
+
+## 0.5.5
+
+23 Sept 2026
+
+- Group the items in the column menu
+- Add a bunch of new columns
+  - Dates & Time (existing: Added)
+    - Completed
+    - Started
+    - Last Active
+    - Download Time
+    - Seeding Time
+  - Totals (new group)
+    - Total DL
+    - Total UL
+    - Remaining
+    - Size When Done
+  - Limits (new group)
+    - DL Limit
+    - UL Limit
+    - Ratio Limit
+    - Idle Limit
+    - Peer Limit
+
+## 0.5.4
+
+20th September 2026
+
+- Fix torrent-table column restore logic
+- Fix missed sentinel value in ratio column
+- Fix "Known folders" in Set Location modal
+- Add "Known folders" dropdown to the "Add torrent" modal
+- Move known folders to drop-down
+- Try simplify UX for the relative path in set location field
+- Handle Add exceptions
+
 ## 0.5.3
 
 - Fix the signature of the thinned ARM-only release

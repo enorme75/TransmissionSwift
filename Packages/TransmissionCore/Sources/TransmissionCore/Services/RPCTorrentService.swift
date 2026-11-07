@@ -1,0 +1,516 @@
+import Foundation
+import OSLog
+import TransmissionRPC
+
+private let logger = Logger(subsystem: "net.jvacek.TransmissionSwift", category: "core")
+
+public actor RPCTorrentService: TorrentService {
+    private let client: any TransmissionClient
+    private let pollingInterval: @Sendable () -> TimeInterval
+    /// Interval for the daemon's changed set between full polls; clamped to
+    /// `pollingInterval` so the incremental path can't be slower than the base.
+    private let incrementalPollingInterval: @Sendable () -> TimeInterval
+    private var continuation: AsyncThrowingStream<[Torrent], Error>.Continuation?
+    private var pollTask: Task<Void, Never>?
+    /// The sleep between ticks, kept so a polling-preference change can cut it
+    /// short instead of waiting out the old interval.
+    private var pollSleep: Task<Void, Never>?
+    private var consecutiveFailures = 0
+    /// Last full list plus the incremental changes merged into it.
+    private var snapshot = TorrentSnapshot()
+    /// Bumped whenever the snapshot is written from outside the loop, so a
+    /// response that was already in flight can tell it is stale.
+    private var snapshotGeneration = 0
+
+    /// Cached result from the most recent `session-get`. Updated by `freeSpace()`
+    /// which is called on connect and periodically thereafter. Used for:
+    ///   - `isAlternativeSpeedEnabled()` — avoids an extra RPC on every read
+    ///   - `add()` — gates the `labels` argument on rpcVersion >= 17
+    private var cachedSession: SessionInfo?
+
+    public init(
+        client: any TransmissionClient,
+        pollingInterval: @escaping @Sendable () -> TimeInterval = {
+            let v = UserDefaults.standard.double(forKey: PreferenceKeys.pollingIntervalSeconds)
+            return v > 0
+                ? PollingIntervals.normalized(v, to: PollingIntervals.refresh)
+                : PollingIntervals.defaultRefresh
+        },
+        incrementalPollingInterval: @escaping @Sendable () -> TimeInterval = {
+            let v = UserDefaults.standard.double(
+                forKey: PreferenceKeys.incrementalPollingIntervalSeconds)
+            return v > 0 ? v : PollingIntervals.defaultIncremental
+        }
+    ) {
+        self.client = client
+        self.pollingInterval = pollingInterval
+        self.incrementalPollingInterval = incrementalPollingInterval
+    }
+
+    public func torrentsStream() async -> AsyncThrowingStream<[Torrent], Error> {
+        // Unicast: cancel any existing poll loop before handing back a new stream.
+        pollTask?.cancel()
+        consecutiveFailures = 0
+        // A new stream means a new connection; the snapshot belongs to the old
+        // one, so start with a full poll.
+        snapshot.reset()
+        let (stream, cont) = AsyncThrowingStream<[Torrent], Error>.makeStream()
+        self.continuation = cont
+        // The loop owns the stream it was started for. A cancelled predecessor
+        // finishing must not finish the stream that replaced it.
+        let task = Task { await self.runPollLoop(cont) }
+        self.pollTask = task
+        // Cancelling the consumer's for-await must cancel the unstructured poll task.
+        cont.onTermination = { [task] _ in task.cancel() }
+        return stream
+    }
+
+    /// Fetches free space and caches the full `SessionInfo` as a side effect.
+    /// Called on connect and on a longer interval from `TorrentStore` — this
+    /// is the only place `cachedSession` is refreshed, so the cache is as
+    /// fresh as the caller's polling cadence.
+    public func freeSpace() async -> Int64? {
+        // A transient failure must not clobber `cachedSession`: it also backs
+        // `supportsLabels()` and `downloadDirectory()`, so wiping it would flip
+        // capability detection for a daemon that is merely slow to answer. Keep
+        // the last-known-good and return its (stale but usable) free space.
+        guard let session = try? await client.sessionGet() else {
+            return cachedSession?.downloadDirFreeSpace
+        }
+        cachedSession = session
+        return session.downloadDirFreeSpace
+    }
+
+    public func downloadDirectory() async -> String? {
+        cachedSession?.downloadDir
+    }
+
+    public func supportsLabels() async -> Bool {
+        // Optimistic until the first session-get lands (nil cache = don't disable
+        // a capability we can't disprove); the store refreshes this alongside
+        // freeSpace polling, so it flips to false as soon as an old daemon's
+        // rpc-version is known.
+        cachedSession.map { $0.rpcVersion >= 17 } ?? true
+    }
+
+    public func torrents() async throws -> [Torrent] {
+        let resp = try await client.torrentGet(fields: TorrentGetResponse.listFields, ids: nil)
+        return resp.torrents.map { Torrent(wire: $0) }
+    }
+
+    private func runPollLoop(_ stream: AsyncThrowingStream<[Torrent], Error>.Continuation) async {
+        let waker = NotificationCenter.default.addObserver(
+            forName: PollingIntervals.changed, object: nil, queue: nil
+        ) { [weak self] _ in
+            Task { await self?.wakePoll() }
+        }
+        defer { NotificationCenter.default.removeObserver(waker) }
+
+        while !Task.isCancelled {
+            let base = pollingInterval()
+            let incremental = PollingIntervals.clampedIncremental(
+                incrementalPollingInterval(), refresh: base)
+            let fullDue = snapshot.isFullPollDue(base: base, now: Date())
+            // A post-mutation refresh writes the snapshot outside this loop; a
+            // response already in flight must not land on top of it.
+            let generation = snapshotGeneration
+            var failed = false
+            do {
+                let resp = try await client.torrentGet(
+                    fields: TorrentGetResponse.listFields,
+                    ids: fullDue ? nil : .recentlyActive)
+                // A cancelled loop belongs to a stream that was replaced; its
+                // response must not re-seed the snapshot the new one reset.
+                guard !Task.isCancelled else { break }
+                if generation == snapshotGeneration {
+                    let fresh = resp.torrents.map { Torrent(wire: $0) }
+                    if fullDue {
+                        snapshot.applyFull(fresh, at: Date())
+                    } else {
+                        snapshot.applyChanges(fresh, removed: resp.removed ?? [])
+                    }
+                    stream.yield(snapshot.torrents)
+                }
+                consecutiveFailures = 0
+            } catch {
+                logger.error("Poll error: \(error)")
+                consecutiveFailures += 1
+                if Self.failureDecision(for: error, consecutiveFailures: consecutiveFailures)
+                    == .stop
+                {
+                    stream.finish(throwing: error)
+                    return
+                }
+                failed = true
+            }
+            // Retries keep the old full-list cadence: at the incremental
+            // interval three attempts would give a restarting daemon ~3s.
+            await sleep(failed ? max(incremental, Self.retryDelay) : incremental)
+        }
+        stream.finish()
+    }
+
+    /// Sleep between ticks. Cancelling this task, or a polling-preference
+    /// change, ends the wait early so the new interval takes effect at once.
+    /// `pollSleep` is never cleared: a cancelled predecessor resuming from its
+    /// wait must not drop the handle the live loop stored meanwhile.
+    private func sleep(_ seconds: TimeInterval) async {
+        let task = Task<Void, Never> {
+            do { try await Task.sleep(for: .seconds(seconds)) } catch {}
+        }
+        pollSleep = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func wakePoll() {
+        pollSleep?.cancel()
+    }
+
+    /// Whether a failed poll retries or ends the stream.
+    enum PollFailure: Equatable {
+        case retry
+        case stop
+    }
+
+    /// How long a failed poll waits before retrying.
+    private static let retryDelay: TimeInterval = 5
+
+    /// Fatal errors end the stream at once; anything else gets three attempts.
+    static func failureDecision(for error: TransmissionError, consecutiveFailures: Int)
+        -> PollFailure
+    {
+        if isFatal(error) || consecutiveFailures >= 3 {
+            return .stop
+        }
+        return .retry
+    }
+
+    private static func isFatal(_ error: TransmissionError) -> Bool {
+        switch error {
+        case .unauthorized:
+            return true
+        case .network(let urlError):
+            return urlError.code == .badURL || urlError.code == .unsupportedURL
+        default:
+            return false
+        }
+    }
+
+    // MARK: - Actions
+
+    public func start(_ ids: [Torrent.ID]) async throws {
+        try await client.torrentAction("torrent-start", ids: ids)
+        await refreshAfterMutation()
+    }
+
+    public func stop(_ ids: [Torrent.ID]) async throws {
+        try await client.torrentAction("torrent-stop", ids: ids)
+        await refreshAfterMutation()
+    }
+
+    public func remove(_ ids: [Torrent.ID], deleteLocalData: Bool) async throws {
+        try await client.torrentRemove(ids: ids, deleteLocalData: deleteLocalData)
+        await refreshAfterMutation()
+    }
+
+    public func verify(_ ids: [Torrent.ID]) async throws {
+        try await client.torrentAction("torrent-verify", ids: ids)
+        await refreshAfterMutation()
+    }
+
+    public func reannounce(_ ids: [Torrent.ID]) async throws {
+        try await client.torrentAction("torrent-reannounce", ids: ids)
+        await refreshAfterMutation()
+    }
+
+    public func setFilesWanted(_ id: Torrent.ID, fileIDs: [TorrentFile.ID], wanted: Bool)
+        async throws
+    {
+        // An empty array means "all files" on the wire — skip rather than clobber.
+        guard !fileIDs.isEmpty else { return }
+        var args = TorrentSetArguments(ids: [id])
+        if wanted {
+            args.filesWanted = fileIDs
+        } else {
+            args.filesUnwanted = fileIDs
+        }
+        try await client.torrentSet(args)
+        await refreshAfterMutation()
+    }
+
+    public func setFilePriority(
+        _ id: Torrent.ID, fileIDs: [TorrentFile.ID], priority: TorrentPriority
+    ) async throws {
+        guard !fileIDs.isEmpty else { return }
+        var args = TorrentSetArguments(ids: [id])
+        switch priority {
+        case .low: args.priorityLow = fileIDs
+        case .normal: args.priorityNormal = fileIDs
+        case .high: args.priorityHigh = fileIDs
+        }
+        try await client.torrentSet(args)
+        await refreshAfterMutation()
+    }
+
+    public func setPriority(_ ids: [Torrent.ID], priority: TorrentPriority) async throws {
+        var args = TorrentSetArguments(ids: ids)
+        switch priority {
+        case .low: args.bandwidthPriority = -1
+        case .normal: args.bandwidthPriority = 0
+        case .high: args.bandwidthPriority = 1
+        }
+        try await client.torrentSet(args)
+        await refreshAfterMutation()
+    }
+
+    public func setOptions(_ id: Torrent.ID, options: TorrentOptions) async throws {
+        var args = TorrentSetArguments(ids: [id])
+        args.downloadLimited = options.downloadLimited
+        args.downloadLimit = options.downloadLimitKBps
+        args.uploadLimited = options.uploadLimited
+        args.uploadLimit = options.uploadLimitKBps
+        args.honorsSessionLimits = options.honorsSessionLimits
+        args.seedRatioLimit = options.seedRatioLimit
+        args.seedRatioMode = options.seedRatioLimited ? 1 : 0
+        args.seedIdleLimit = options.seedIdleMinutes
+        args.seedIdleMode = options.seedIdleLimited ? 1 : 0
+        args.peerLimit = options.peerLimit
+        try await client.torrentSet(args)
+        await refreshAfterMutation()
+    }
+
+    public func setSpeedLimits(_ ids: [Torrent.ID], _ patch: TorrentSpeedLimitPatch) async throws {
+        guard !ids.isEmpty else { return }
+        var args = TorrentSetArguments(ids: ids)
+        args.downloadLimited = patch.downloadLimited
+        args.downloadLimit = patch.downloadLimitKBps
+        args.uploadLimited = patch.uploadLimited
+        args.uploadLimit = patch.uploadLimitKBps
+        try await client.torrentSet(args)
+        await refreshAfterMutation()
+    }
+
+    public func setLabels(_ ids: [Torrent.ID], labels: [String]) async throws {
+        // Label writes require rpc-version >= 17 (Transmission 4.0). cachedSession
+        // is refreshed by freeSpace() on connect and periodically; if it's still
+        // missing, fetch once here so a cold cache can't silently no-op the action.
+        guard let session = await sessionWarmingCache() else {
+            logger.warning(
+                "setLabels skipped — session unknown (cannot verify rpc-version); ids=\(ids, privacy: .public)")
+            throw TransmissionError.serverError("Cannot verify whether the daemon supports labels (session-get failed)")
+        }
+        guard session.rpcVersion >= 17 else {
+            logger.warning(
+                "setLabels skipped — daemon rpc-version \(session.rpcVersion) < 17 does not support labels; ids=\(ids, privacy: .public)"
+            )
+            throw TransmissionError.serverError(
+                "This daemon (rpc-version \(session.rpcVersion)) does not support labels")
+        }
+        logger.debug("setLabels: ids=\(ids, privacy: .public) labels=\(labels, privacy: .public)")
+        var args = TorrentSetArguments(ids: ids)
+        args.labels = labels
+        try await client.torrentSet(args)
+        logger.debug("setLabels succeeded for ids=\(ids, privacy: .public)")
+        await refreshAfterMutation()
+    }
+
+    public func setTrackerList(_ id: Torrent.ID, to list: String) async throws {
+        // Like labels, trackerList is rpc-version 17 (Transmission 4.0). An older
+        // daemon would silently ignore the key, so fail loudly instead.
+        guard let session = await sessionWarmingCache() else {
+            throw TransmissionError.serverError(
+                "Cannot verify whether the daemon supports editing trackers (session-get failed)")
+        }
+        guard session.rpcVersion >= 17 else {
+            throw TransmissionError.serverError(
+                "This daemon (rpc-version \(session.rpcVersion)) does not support editing trackers")
+        }
+        var args = TorrentSetArguments(ids: [id])
+        args.trackerList = list
+        try await client.torrentSet(args)
+        await refreshAfterMutation()
+    }
+
+    public func setLocation(_ ids: [Torrent.ID], location: String, move: Bool) async throws {
+        let args = TorrentSetLocationArguments(ids: ids, location: location, move: move)
+        try await client.torrentSetLocation(args)
+        await refreshAfterMutation()
+    }
+
+    public func renamePath(_ id: Torrent.ID, path: String, newName: String) async throws {
+        let args = TorrentRenamePathArguments(ids: [id], path: path, name: newName)
+        _ = try await client.torrentRenamePath(args)
+        await refreshAfterMutation()
+    }
+
+    public func setAlternativeSpeedEnabled(_ enabled: Bool) async throws {
+        try await client.sessionSet(SessionSetArguments(altSpeedEnabled: enabled))
+    }
+
+    public func isAlternativeSpeedEnabled() async -> Bool {
+        // A freshly constructed service (App Intents, no connect flow) starts
+        // with a cold cache; reading `nil` would report "off" for a daemon whose
+        // turtle mode is on, and the toggle-on-read would then no-op. Warm once.
+        await sessionWarmingCache()?.altSpeedEnabled ?? false
+    }
+
+    /// The cached `session-get`, fetching it once when the cache is cold.
+    /// Returns nil only when the daemon doesn't answer. Callers that must not
+    /// proceed on unknown session state can treat nil as an error.
+    private func sessionWarmingCache() async -> SessionInfo? {
+        if let cached = cachedSession { return cached }
+        let fetched = try? await client.sessionGet()
+        cachedSession = fetched
+        return fetched
+    }
+
+    public func daemonVersion() async -> String? {
+        cachedSession?.version
+    }
+
+    public func sessionSettings() async -> SessionSettings? {
+        // Warm a cold cache from a fresh session-get so mocked/empty state
+        // doesn't read stale or nil values.
+        guard let session = await sessionWarmingCache() else { return nil }
+        return SessionSettings(wire: session)
+    }
+
+    public func applySessionSettings(_ patch: SessionSettingsPatch) async throws {
+        guard !patch.isEmpty else { return }
+        var args = SessionSetArguments()
+        patch.apply(to: &args)
+        logger.info("applySessionSettings: \(String(describing: args), privacy: .public)")
+        try await client.sessionSet(args)
+        // Refresh the cache so subsequent reads reflect the written state.
+        if let fetched = try? await client.sessionGet() {
+            cachedSession = fetched
+        }
+    }
+
+    public func isPortOpen() async -> Bool? {
+        try? await client.portTest()
+    }
+
+    public func sessionStats() async -> SessionStats? {
+        try? await client.sessionStats()
+    }
+
+    public func inspectorData(for id: Torrent.ID) async throws -> Torrent {
+        let fields = TorrentGetResponse.listFields + TorrentGetResponse.inspectorFields
+        let resp = try await client.torrentGet(fields: fields, ids: .list([id]))
+        guard let wire = resp.torrents.first else {
+            throw TransmissionError.serverError("No torrent returned for id \(id)")
+        }
+        return Torrent(wire: wire)
+    }
+
+    public func add(
+        fileURL: URL?,
+        magnetURL: String?,
+        destination: String,
+        labels: [String],
+        priority: TorrentPriority,
+        startWhenAdded: Bool
+    ) async throws {
+        let filename: String?
+        let metainfo: String?
+
+        if let magnetURL {
+            filename = magnetURL
+            metainfo = nil
+        } else if let fileURL {
+            // URLs from SwiftUI's `.fileImporter` are security-scoped; reading
+            // them without claiming access fails with NSFileReadNoPermissionError
+            // ("you don't have permission to view it"), even outside the sandbox.
+            let scoped = fileURL.startAccessingSecurityScopedResource()
+            defer { if scoped { fileURL.stopAccessingSecurityScopedResource() } }
+            let data = try Data(contentsOf: fileURL)
+            metainfo = data.base64EncodedString()
+            filename = nil
+        } else {
+            filename = nil
+            metainfo = nil
+        }
+
+        let bandwidthPriority: Int
+        switch priority {
+        case .low: bandwidthPriority = -1
+        case .normal: bandwidthPriority = 0
+        case .high: bandwidthPriority = 1
+        }
+
+        let wireLabels: [String]?
+        if !labels.isEmpty {
+            // Label support is gated on rpc-version. Warm a cold cache first so a
+            // fresh service (App Intents) can't silently drop the labels; if the
+            // session can't be read we fail rather than add without them.
+            guard let session = await sessionWarmingCache() else {
+                throw TransmissionError.serverError(
+                    "Cannot verify whether the daemon supports labels (session-get failed)")
+            }
+            wireLabels = session.rpcVersion >= 17 ? labels : nil
+        } else {
+            wireLabels = nil
+        }
+
+        let args = TorrentAddArguments(
+            filename: filename,
+            metainfo: metainfo,
+            downloadDir: destination.isEmpty ? nil : destination,
+            paused: !startWhenAdded,
+            bandwidthPriority: bandwidthPriority,
+            labels: wireLabels
+        )
+        let response = try await client.torrentAdd(args)
+        if let dup = response.torrentDuplicate {
+            throw TransmissionError.torrentDuplicate(name: dup.name)
+        }
+        await refreshAfterMutation()
+    }
+
+    // MARK: - Snapshot capture
+
+    public func captureRawSnapshot() async throws -> SnapshotFile {
+        // The union of list + inspector fields: the snapshot is wire-shaped, so
+        // replay decodes through the exact same path as a live poll.
+        let fields = TorrentGetResponse.listFields + TorrentGetResponse.inspectorFields
+        let response = try await client.torrentGet(fields: fields, ids: nil)
+        let session = try await client.sessionGet()
+        return SnapshotFile(
+            version: snapshotFormatVersion,
+            capturedAt: ISO8601DateFormatter().string(from: Date()),
+            source: SnapshotSourceInfo(
+                daemonVersion: session.version,
+                rpcVersion: session.rpcVersion,
+                redacted: false
+            ),
+            session: session,
+            torrents: response.torrents,
+            redactions: nil
+        )
+    }
+
+    // MARK: - Post-mutation refresh
+
+    /// After a mutation RPC succeeds, immediately re-fetch and yield a fresh
+    /// snapshot so the UI reflects the change without waiting for the next poll
+    /// tick. Best-effort — a failed refresh is harmless because the poll loop
+    /// picks the change up shortly. The mutation RPCs return no state (spec
+    /// §3.1–3.4 "Response arguments: none"), so this second `torrent-get` is
+    /// unavoidable.
+    private func refreshAfterMutation() async {
+        do {
+            let full = try await torrents()
+            snapshotGeneration += 1
+            snapshot.applyFull(full, at: Date())
+            continuation?.yield(snapshot.torrents)
+            logger.debug("Post-mutation refresh yielded \(full.count) torrents")
+        } catch {
+            logger.error("Post-mutation refresh failed: \(error)")
+        }
+    }
+}

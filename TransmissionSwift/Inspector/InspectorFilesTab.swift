@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import TransmissionCore
+import TransmissionTestSupport
 
 /// Per-file selection and bandwidth priority. Mutations dispatch through the
 /// store; the service broadcasts a fresh snapshot, which flows back in via
@@ -8,6 +9,7 @@ import TransmissionCore
 struct InspectorFilesTab: View {
     @Environment(TorrentStore.self) private var store
     @Environment(ServerProfileStore.self) private var profileStore
+    @Environment(OpenMappingStore.self) private var mappingStore
     let torrent: Torrent
 
     @State private var selectedFiles: Set<TorrentFile.ID> = []
@@ -118,17 +120,18 @@ struct InspectorFilesTab: View {
 
     @ViewBuilder
     private func mappingMenu(for file: TorrentFile) -> some View {
-        let mappings = profileStore.activeProfile?.mappings ?? []
+        let profile = profileStore.activeProfile
+        let mappings = profile.map { mappingStore.mappings(for: $0) } ?? []
         if mappings.isEmpty {
             Button("No file mappings configured") {}.disabled(true)
         } else {
             ForEach(mappings) { mapping in
                 Button {
-                    guard let profile = profileStore.activeProfile else { return }
+                    guard let profile else { return }
                     Task {
                         await MappingOpener.open(
                             mapping, torrent: torrent, file: file, profile: profile, store: store,
-                            profileStore: profileStore)
+                            mappingStore: mappingStore)
                     }
                 } label: {
                     Label(
@@ -173,7 +176,7 @@ struct InspectorFilesTab: View {
         Binding(
             get: { file.wanted },
             set: { wanted in
-                Task { await store.setFilesWanted(torrent.id, fileIDs: [file.id], wanted: wanted) }
+                Task { await store.actions.setFilesWanted(torrent.id, fileIDs: [file.id], wanted: wanted) }
             }
         )
     }
@@ -185,13 +188,13 @@ struct InspectorFilesTab: View {
                 Task {
                     if let priority = choice.priority {
                         if !file.wanted {
-                            await store.setFilesWanted(
+                            await store.actions.setFilesWanted(
                                 torrent.id, fileIDs: [file.id], wanted: true)
                         }
-                        await store.setFilePriority(
+                        await store.actions.setFilePriority(
                             torrent.id, fileIDs: [file.id], priority: priority)
                     } else {
-                        await store.setFilesWanted(torrent.id, fileIDs: [file.id], wanted: false)
+                        await store.actions.setFilesWanted(torrent.id, fileIDs: [file.id], wanted: false)
                     }
                 }
             }
@@ -383,6 +386,9 @@ private enum FilePriorityChoice: CaseIterable, Hashable {
         .environment(
             ServerProfileStore(
                 fileURL: URL.temporaryDirectory.appending(path: "preview-servers.json"))
+        )
+        .environment(
+            OpenMappingStore(fileURL: URL.temporaryDirectory.appending(path: "preview-mappings.json"))
         )
         .frame(width: 322, height: 400)
 }

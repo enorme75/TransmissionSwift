@@ -68,6 +68,10 @@ public struct TorrentSetArguments: Encodable, Sendable {
     /// Whole-set replace of the torrent's labels. Requires RPC ≥ 17
     /// (Transmission 4.0). Omit on older daemons.
     public var labels: [String]?
+    /// Whole-set replace of the torrent's trackers: announce URLs, one per line,
+    /// a blank line between tiers (BEP 12). Requires RPC ≥ 17. Omit on older
+    /// daemons.
+    public var trackerList: String?
 
     enum CodingKeys: String, CodingKey {
         case ids
@@ -89,6 +93,7 @@ public struct TorrentSetArguments: Encodable, Sendable {
         case queuePosition
         case bandwidthPriority
         case labels
+        case trackerList
     }
 
     public init(ids: [Int]) {
@@ -178,6 +183,30 @@ public struct TorrentAddResponse: Decodable, Sendable {
     }
 }
 
+// MARK: - torrent-rename-path
+//
+// Spec §3.7: `ids` must contain exactly one torrent. `path` is the existing
+// file/folder path to rename (the torrent's name for a root rename), `name`
+// is the new single-component name. Response carries `path`, `name`, `id`.
+
+public struct TorrentRenamePathArguments: Encodable, Sendable {
+    public var ids: [Int]
+    public var path: String
+    public var name: String
+
+    public init(ids: [Int], path: String, name: String) {
+        self.ids = ids
+        self.path = path
+        self.name = name
+    }
+}
+
+public struct TorrentRenamePathResponse: Decodable, Sendable {
+    public let id: Int
+    public let path: String
+    public let name: String
+}
+
 // MARK: - session-set
 
 public struct SessionSetArguments: Encodable, Sendable {
@@ -198,6 +227,7 @@ public struct SessionSetArguments: Encodable, Sendable {
     public var blocklistURL: String?
 
     public var dhtEnabled: Bool?
+    public var downloadDir: String?
     public var downloadQueueEnabled: Bool?
     public var downloadQueueSize: Int?
 
@@ -240,6 +270,7 @@ public struct SessionSetArguments: Encodable, Sendable {
         case blocklistURL = "blocklist-url"
 
         case dhtEnabled = "dht-enabled"
+        case downloadDir = "download-dir"
         case downloadQueueEnabled = "download-queue-enabled"
         case downloadQueueSize = "download-queue-size"
 
@@ -280,6 +311,7 @@ public struct SessionSetArguments: Encodable, Sendable {
         blocklistEnabled: Bool? = nil,
         blocklistURL: String? = nil,
         dhtEnabled: Bool? = nil,
+        downloadDir: String? = nil,
         downloadQueueEnabled: Bool? = nil,
         downloadQueueSize: Int? = nil,
         encryption: String? = nil,
@@ -312,6 +344,7 @@ public struct SessionSetArguments: Encodable, Sendable {
         self.blocklistEnabled = blocklistEnabled
         self.blocklistURL = blocklistURL
         self.dhtEnabled = dhtEnabled
+        self.downloadDir = downloadDir
         self.downloadQueueEnabled = downloadQueueEnabled
         self.downloadQueueSize = downloadQueueSize
         self.encryption = encryption

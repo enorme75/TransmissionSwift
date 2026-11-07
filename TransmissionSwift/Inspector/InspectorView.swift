@@ -1,5 +1,6 @@
 import SwiftUI
 import TransmissionCore
+import TransmissionTestSupport
 
 /// Right-pane inspector — header, icon-segmented tab bar, and one of five
 /// tab bodies. Renders the first selected torrent; selection changes flow in
@@ -8,13 +9,13 @@ struct InspectorView: View {
     @Environment(TorrentStore.self) private var store
 
     var body: some View {
-        @Bindable var store = store
+        @Bindable var inspector = store.inspector
 
-        if let torrent = store.selectedTorrents.first {
+        if let torrent = store.list.selectedTorrents.first {
             VStack(spacing: 0) {
-                InspectorHeader(torrent: torrent, selectionCount: store.selectedTorrents.count)
+                InspectorHeader(torrent: torrent, selectionCount: store.list.selectedTorrents.count)
 
-                Picker("Inspector Tab", selection: $store.inspectorTab) {
+                Picker("Inspector Tab", selection: $inspector.tab) {
                     ForEach(InspectorTab.allCases, id: \.self) { tab in
                         Image(systemName: tab.systemImage)
                             .accessibilityLabel(tab.displayLabel)
@@ -37,7 +38,7 @@ struct InspectorView: View {
             }
             // Fetch rich inspector data whenever the selected torrent changes.
             .task(id: torrent.id) {
-                await store.fetchInspectorDetail(for: torrent.id)
+                await store.inspector.fetch(for: torrent.id)
             }
         } else {
             ContentUnavailableView(
@@ -50,16 +51,17 @@ struct InspectorView: View {
 
     @ViewBuilder
     private func tabContent(for torrent: Torrent) -> some View {
-        // For tabs that need rich per-file/peer/tracker data, use the separately-
-        // fetched inspectorDetail when it matches the current torrent. The main
-        // list poll only carries list fields, so those arrays would otherwise
-        // always be empty.
-        let detail = store.inspectorDetail?.id == torrent.id ? store.inspectorDetail! : torrent
-        switch store.inspectorTab {
-        case .general: InspectorGeneralTab(torrent: torrent.mergingMetadata(from: store.inspectorDetail))
+        // For tabs that need rich per-file/peer data, use the separately-fetched
+        // inspectorDetail when it matches the current torrent. The main list poll
+        // only carries list fields, so those arrays would otherwise be empty.
+        // Trackers ride the list poll (`trackerStats` is a list field), so they
+        // stay live without the detail fetch.
+        let detail = store.inspector.detail?.id == torrent.id ? store.inspector.detail! : torrent
+        switch store.inspector.tab {
+        case .general: InspectorGeneralTab(torrent: torrent.mergingMetadata(from: store.inspector.detail))
         case .files: InspectorFilesTab(torrent: detail)
         case .peers: InspectorPeersTab(torrent: detail)
-        case .trackers: InspectorTrackersTab(torrent: detail)
+        case .trackers: InspectorTrackersTab(torrent: torrent)
         case .options: InspectorOptionsTab(torrent: torrent)
         }
     }
@@ -68,15 +70,29 @@ struct InspectorView: View {
 private struct InspectorHeader: View {
     let torrent: Torrent
     let selectionCount: Int
+    @Environment(TorrentStore.self) private var store
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             StatusDot(status: torrent.status, size: 10)
                 .padding(.top, 5)
             VStack(alignment: .leading, spacing: 2) {
-                Text(torrent.name)
-                    .font(.headline)
-                    .lineLimit(2)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(torrent.name)
+                        .font(.headline)
+                        .lineLimit(2)
+                    if store.actionsEnabled {
+                        Button {
+                            store.openRenameTorrent(for: torrent.id)
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Rename torrent")
+                        .help("Rename torrent")
+                    }
+                }
                 Text(subtitle)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -103,13 +119,15 @@ private struct InspectorHeader: View {
     return InspectorView()
         .environment(store)
         .environment(TagColorStore())
+        .environment(GeoIPStore())
         .frame(width: 322, height: 600)
-        .task { store.selectedTorrentIDs = [5] }
+        .task { store.list.selectedTorrentIDs = [5] }
 }
 
 #Preview("Empty") {
     InspectorView()
         .environment(TorrentStore(service: MockTorrentService(initial: [])))
         .environment(TagColorStore())
+        .environment(GeoIPStore())
         .frame(width: 322, height: 600)
 }

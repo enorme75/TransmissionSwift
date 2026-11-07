@@ -1,0 +1,46 @@
+{% extends "_layouts/base.html" %}
+{% set page = "donate" %}
+{% set path = "/donate/" %}
+{% set sitemap = {"changefreq": "yearly", "priority": "0.3"} %}
+{% set title = "Donate: Support TransmissionSwift" %}
+{% set description = "Support TransmissionSwift, a free and open-source native Transmission remote for macOS, through GitHub Sponsors, Ko-fi or Liberapay." %}
+{% set og_description = "Support TransmissionSwift through GitHub Sponsors, Ko-fi or Liberapay." %}
+{% block head %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "TransmissionSwift", "item": "https://transmissionswift.jvacek.eu/" },
+    { "@type": "ListItem", "position": 2, "name": "Donate", "item": "https://transmissionswift.jvacek.eu/donate/" }
+  ]
+}
+</script>
+{% endblock %}
+{% block main_class %} prose{% endblock %}
+{% block content %}
+  <p class="crumbs"><a href="/">TransmissionSwift</a> / Donate</p>
+
+  <h1>Support TransmissionSwift</h1>
+
+  <p class="lede">
+    TransmissionSwift is free and open source, built in my spare time.
+    If it is useful to you, you can support its development through any of the
+    options below. Every contribution is appreciated.
+  </p>
+
+  <div class="actions">
+    <a class="btn" href="https://github.com/sponsors/jvacek">GitHub Sponsors</a>
+    <a class="btn secondary" href="https://ko-fi.com/jvacek">Ko-fi</a>
+    <a class="btn secondary" href="https://liberapay.com/jvacek">Liberapay</a>
+  </div>
+
+  <h2>Other ways to help</h2>
+  <p>
+    Donations are never required. If you would rather not, you can still support
+    the project at no cost: star the
+    <a href="https://github.com/jvacek/TransmissionSwift">GitHub repository</a>,
+    <a href="https://github.com/jvacek/TransmissionSwift/issues">report a bug</a>
+    or suggest a feature, or tell someone who runs Transmission on a server.
+  </p>
+{% endblock %}

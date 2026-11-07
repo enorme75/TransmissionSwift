@@ -22,7 +22,7 @@ final class TransmissionSwiftUITests: XCTestCase {
     @MainActor
     func testAddServerAndTestConnection() throws {
         try XCTSkipUnless(
-            ProcessInfo.processInfo.environment["TEST_RUNNER_TRANSMISSION_E2E"] == "1",
+            ProcessInfo.processInfo.environment["TRANSMISSION_E2E"] == "1",
             "Set TEST_RUNNER_TRANSMISSION_E2E=1 and run a local transmission-daemon to enable")
 
         let app = XCUIApplication()
@@ -83,6 +83,13 @@ final class TransmissionSwiftUITests: XCTestCase {
         XCTAssertTrue(
             table.cells.firstMatch.waitForExistence(timeout: 10),
             "Expected snapshot data to populate at least one table row")
+
+        // Replay takes its server name from the file's `source.serverName`, so
+        // test fixtures show a friendly title instead of "Snapshot — <file>".
+        XCTAssertTrue(
+            app.windows.matching(NSPredicate(format: "title == %@", "My remote server"))
+                .firstMatch.waitForExistence(timeout: 10),
+            "Expected the snapshot's server name in the window title")
 
         // The fixture's first torrent must have decoded through the wire mapping.
         let firstRow = table.staticTexts.matching(

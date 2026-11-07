@@ -5,46 +5,49 @@ struct TorrentListView: View {
     @Environment(TorrentStore.self) private var store
     @Environment(TagColorStore.self) private var tagColors
     @Environment(ServerProfileStore.self) private var profileStore
+    @Environment(OpenMappingStore.self) private var mappingStore
 
     var body: some View {
-        let prefs = store.tablePreferences
+        let prefs = store.list.tablePreferences
         return TorrentTableRepresentable(
-            rows: store.visibleTorrents,
+            rows: store.list.visibleTorrents,
             selection: Binding(
-                get: { store.selectedTorrentIDs },
-                set: { store.selectedTorrentIDs = $0 }
+                get: { store.list.selectedTorrentIDs },
+                set: { store.list.selectedTorrentIDs = $0 }
             ),
-            downloadDirectoryBase: store.downloadDirectory,
+            downloadDirectoryBase: store.list.downloadDirectory,
             sortColumnID: prefs.sortColumn,
             sortAscending: prefs.sortAscending,
             onSortChange: { column, ascending in
-                store.setSortOrder(column: column, ascending: ascending)
+                store.list.setSortOrder(column: column, ascending: ascending)
             },
             actionsEnabled: store.actionsEnabled,
-            labelsSupported: store.supportsLabels,
+            labelsSupported: store.session.supportsLabels,
             tagColors: tagColors.colors,
             onRowAction: { action, ids in
                 Task {
                     switch action {
-                    case .resume: await store.start(ids)
-                    case .pause: await store.stop(ids)
-                    case .setPriority(let priority): await store.setPriority(ids, priority: priority)
-                    case .verify: await store.verify(ids)
-                    case .reannounce: await store.reannounce(ids)
-                    case .remove: await store.remove(ids)
+                    case .resume: await store.actions.start(ids)
+                    case .pause: await store.actions.stop(ids)
+                    case .setPriority(let priority): await store.actions.setPriority(ids, priority: priority)
+                    case .verify: await store.actions.verify(ids)
+                    case .reannounce: await store.actions.reannounce(ids)
+                    case .remove: store.actions.requestRemove(ids)
                     case .removeAndDeleteData:
-                        await store.remove(ids, deleteLocalData: true)
+                        store.actions.requestRemove(ids, deleteLocalData: true)
                     case .editLabels:
                         store.openEditLabels(for: ids)
                     case .setLocation:
                         store.openSetLocation(for: ids)
+                    case .rename:
+                        if let id = ids.first { store.openRenameTorrent(for: id) }
                     }
                 }
             },
             onInspectorRequest: {
-                store.inspectorVisible = true
+                store.inspector.isVisible = true
             },
-            mappings: profileStore.activeProfile?.mappings ?? [],
+            mappings: profileStore.activeProfile.map { mappingStore.mappings(for: $0) } ?? [],
             onOpenMapping: { mapping, ids in
                 openMapping(mapping, ids: ids)
             }
@@ -55,19 +58,19 @@ struct TorrentListView: View {
     }
 
     private func restoreSortOrder() {
-        let prefs = store.tablePreferences
+        let prefs = store.list.tablePreferences
         let column = TransmissionCore.TableColumn(rawValue: prefs.sortColumn) ?? .name
-        store.setSortOrder(column: column, ascending: prefs.sortAscending)
+        store.list.setSortOrder(column: column, ascending: prefs.sortAscending)
     }
 
     private func openMapping(_ mapping: OpenMapping, ids: [Torrent.ID]) {
-        guard let torrent = store.torrents.first(where: { ids.contains($0.id) }),
+        guard let torrent = store.list.torrents.first(where: { ids.contains($0.id) }),
             let profile = profileStore.activeProfile
         else { return }
         Task {
             await MappingOpener.open(
                 mapping, torrent: torrent, file: nil, profile: profile, store: store,
-                profileStore: profileStore)
+                mappingStore: mappingStore)
         }
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 import TransmissionCore
 
-enum ColumnFormatters {
+nonisolated enum ColumnFormatters {
     static func humanizedSize(_ bytes: Int64) -> String {
         let units = ["B", "KB", "MB", "GB", "TB", "PB"]
         var value = Double(bytes)
@@ -77,19 +77,22 @@ enum ColumnFormatters {
         }
     }
 
-    // Formatter allocation is expensive (locale tables); reuse one instance.
-    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
-
+    // A Sendable FormatStyle rather than a shared RelativeDateTimeFormatter: Swift 6
+    // rejects non-Sendable statics, and Foundation caches the locale data itself.
     static func relativeDate(_ date: Date) -> String {
-        relativeDateFormatter.localizedString(for: date, relativeTo: Date())
+        date.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated))
     }
 
     static func queuePosition(_ position: Int?) -> String {
         position.map { "#\($0)" } ?? "\u{2014}"
+    }
+
+    /// Ratios are non-negative; zero (unknown / not started) renders as an em
+    /// dash rather than a misleading "0.00". Negative values are treated the
+    /// same way defensively.
+    static func ratio(_ value: Double) -> String {
+        guard value > 0 else { return "\u{2014}" }
+        return String(format: "%.2f", value)
     }
 
     static func piecesText(have: Int, total: Int) -> String {

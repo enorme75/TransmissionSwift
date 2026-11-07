@@ -7,16 +7,21 @@ import Testing
 // MARK: - Wire fixture
 
 private func makeWire(
+    id: Int = 1,
     status: Int = 0,
     error: Int = 0,
     errorString: String = "",
     isFinished: Bool = false,
     eta: Int = -1,
+    uploadRatio: Double = 0.0,
     bandwidthPriority: Int = 0,
     pieceCount: Int = 100,
     pieceSize: Int64 = 1024,
     haveValid: Int64 = 0,
     queuePosition: Int = 0,
+    peersSendingToUs: Int = 0,
+    peersGettingFromUs: Int = 0,
+    webseedsSendingToUs: Int? = nil,
     trackers: [WireTrackerStub]? = nil,
     trackerStats: [WireTrackerStat]? = nil,
     labels: [String]? = nil,
@@ -27,10 +32,26 @@ private func makeWire(
     downloadedEver: Int64? = nil,
     uploadedEver: Int64? = nil,
     activityDate: Int64? = nil,
-    magnetLink: String? = nil
+    magnetLink: String? = nil,
+    doneDate: Int64? = nil,
+    startDate: Int64? = nil,
+    secondsDownloading: Int64? = nil,
+    secondsSeeding: Int64? = nil,
+    leftUntilDone: Int64? = nil,
+    sizeWhenDone: Int64? = nil,
+    downloadLimit: Int? = nil,
+    downloadLimited: Bool? = nil,
+    uploadLimit: Int? = nil,
+    uploadLimited: Bool? = nil,
+    honorsSessionLimits: Bool? = nil,
+    seedRatioLimit: Double? = nil,
+    seedRatioMode: Int? = nil,
+    seedIdleLimit: Int? = nil,
+    seedIdleMode: Int? = nil,
+    peerLimit: Int? = nil
 ) -> WireTorrent {
     WireTorrent(
-        id: 1,
+        id: id,
         name: "Test",
         hashString: "abc123",
         totalSize: 102_400,
@@ -42,14 +63,15 @@ private func makeWire(
         rateDownload: 0,
         rateUpload: 0,
         peersConnected: 0,
-        peersSendingToUs: 0,
-        peersGettingFromUs: 0,
+        peersSendingToUs: peersSendingToUs,
+        peersGettingFromUs: peersGettingFromUs,
+        webseedsSendingToUs: webseedsSendingToUs,
         peersFrom: WirePeersFrom(
             fromCache: 1, fromDht: 2, fromIncoming: 3,
             fromLpd: 0, fromLtep: 0, fromPex: 0, fromTracker: 0
         ),
         eta: eta,
-        uploadRatio: 0.0,
+        uploadRatio: uploadRatio,
         downloadDir: "/downloads",
         addedDate: 0,
         labels: labels,
@@ -58,6 +80,22 @@ private func makeWire(
         pieceSize: pieceSize,
         haveValid: haveValid,
         queuePosition: queuePosition,
+        doneDate: doneDate,
+        startDate: startDate,
+        secondsDownloading: secondsDownloading,
+        secondsSeeding: secondsSeeding,
+        leftUntilDone: leftUntilDone,
+        sizeWhenDone: sizeWhenDone,
+        downloadLimit: downloadLimit,
+        downloadLimited: downloadLimited,
+        uploadLimit: uploadLimit,
+        uploadLimited: uploadLimited,
+        honorsSessionLimits: honorsSessionLimits,
+        seedRatioLimit: seedRatioLimit,
+        seedRatioMode: seedRatioMode,
+        seedIdleLimit: seedIdleLimit,
+        seedIdleMode: seedIdleMode,
+        peerLimit: peerLimit,
         comment: comment,
         creator: creator,
         dateCreated: dateCreated,
@@ -137,6 +175,25 @@ struct StatusMappingTests {
     func status6() { #expect(Torrent(wire: makeWire(status: 6)).status == .seeding) }
 }
 
+// MARK: - Live transfer links
+
+@Suite("TorrentMapping — activity links")
+struct ActivityMappingTests {
+    @Test("peer and webseed counts map through and drive isActive")
+    func activeLinks() {
+        let seeding = Torrent(wire: makeWire(status: 6, peersGettingFromUs: 2))
+        #expect(seeding.peersGettingFromUs == 2)
+        #expect(seeding.isActive)
+
+        let idle = Torrent(wire: makeWire(status: 6))
+        #expect(idle.webseedsSendingToUs == 0)
+        #expect(!idle.isActive)
+
+        let webseed = Torrent(wire: makeWire(status: 4, webseedsSendingToUs: 1))
+        #expect(webseed.isActive)
+    }
+}
+
 // MARK: - Tracker-failure → error status
 
 @Suite("TorrentMapping — tracker failure promotes to error")
@@ -147,7 +204,7 @@ struct TrackerFailureStatusTests {
         result: String = "Connection timed out"
     ) -> WireTrackerStat {
         WireTrackerStat(
-            id: 1, tier: 0, host: host,
+            id: 1, tier: 0, host: host, announce: "https://\(host)/announce",
             lastAnnounceResult: result, lastAnnounceTime: 0,
             lastAnnounceSucceeded: succeeded, hasAnnounced: true,
             announceState: 1, seederCount: 0, leecherCount: 0,
@@ -200,6 +257,7 @@ struct TrackerFailureStatusTests {
             stat(host: "a.example.com"),
             WireTrackerStat(
                 id: 2, tier: 0, host: "b.example.com",
+                announce: "https://b.example.com/announce",
                 lastAnnounceResult: "", lastAnnounceTime: 0,
                 lastAnnounceSucceeded: false, hasAnnounced: false,
                 announceState: 1, seederCount: 0, leecherCount: 0,
@@ -269,6 +327,23 @@ struct ETAMappingTests {
 }
 
 // MARK: - Queue position mapping
+
+@Suite("TorrentMapping — ratio")
+struct RatioMappingTests {
+    @Test("uploadRatio -1 (TR_RATIO_NA) clamps to 0")
+    func ratioNotAvailable() { #expect(Torrent(wire: makeWire(uploadRatio: -1)).ratio == 0) }
+
+    @Test("uploadRatio -2 (TR_RATIO_INF) clamps to 0")
+    func ratioInfinite() { #expect(Torrent(wire: makeWire(uploadRatio: -2)).ratio == 0) }
+
+    @Test("Ratio 0 is preserved")
+    func ratioZero() { #expect(Torrent(wire: makeWire(uploadRatio: 0)).ratio == 0) }
+
+    @Test("Positive ratio is preserved")
+    func ratioPositive() {
+        #expect(Torrent(wire: makeWire(uploadRatio: 1.75)).ratio == 1.75)
+    }
+}
 
 @Suite("TorrentMapping — queuePosition")
 struct QueuePositionTests {
@@ -352,28 +427,53 @@ struct TrackerHostTests {
     }
 }
 
-// MARK: - peersFrom sum
+// MARK: - Swarm totals from trackerStats
 
-@Suite("TorrentMapping — availablePeerCount")
-struct PeersFromTests {
-    @Test("availablePeerCount is the sum of all peersFrom sub-fields")
-    func sum() {
-        let wire = WireTorrent(
-            id: 1, name: "T", hashString: "x", totalSize: 0,
-            status: 4, error: 0, errorString: "", isFinished: false,
-            percentDone: 0, rateDownload: 0, rateUpload: 0,
-            peersConnected: 5, peersSendingToUs: 0, peersGettingFromUs: 0,
-            peersFrom: WirePeersFrom(
-                fromCache: 1, fromDht: 2, fromIncoming: 3,
-                fromLpd: 4, fromLtep: 5, fromPex: 6, fromTracker: 7
-            ),
-            eta: -1, uploadRatio: 0, downloadDir: "/", addedDate: 0,
-            labels: nil, bandwidthPriority: 0,
-            pieceCount: 1, pieceSize: 1024, haveValid: 0,
-            queuePosition: 0, trackers: nil
+@Suite("TorrentMapping — seeds/peers totals")
+struct SwarmTotalsTests {
+    private func makeStat(seederCount: Int, leecherCount: Int) -> WireTrackerStat {
+        WireTrackerStat(
+            id: 1, tier: 0, host: "tracker.example.com:443",
+            announce: "https://tracker.example.com:443/announce",
+            lastAnnounceResult: "", lastAnnounceTime: 0,
+            lastAnnounceSucceeded: true, hasAnnounced: true,
+            announceState: 3, seederCount: seederCount, leecherCount: leecherCount,
+            downloadCount: 0, isBackup: false
         )
+    }
+
+    @Test("seedCount is the sum of tracker seederCounts")
+    func seedTotal() {
+        let t = Torrent(wire: makeWire(trackerStats: [makeStat(seederCount: 24, leecherCount: 8)]))
+        #expect(t.seedCount == 24)
+    }
+
+    @Test("availablePeerCount is the seeder + leecher swarm total")
+    func swarmTotal() {
+        var wire = makeWire(trackerStats: [makeStat(seederCount: 24, leecherCount: 8)])
+        wire.peersConnected = 5
         let t = Torrent(wire: wire)
-        #expect(t.availablePeerCount == 1 + 2 + 3 + 4 + 5 + 6 + 7)
+        #expect(t.availablePeerCount == 32)
+        #expect(t.connectedPeerCount == 5)
+    }
+
+    @Test("totals sum across trackers")
+    func multiTracker() {
+        let t = Torrent(
+            wire: makeWire(trackerStats: [
+                makeStat(seederCount: 71, leecherCount: 22),
+                makeStat(seederCount: 54, leecherCount: 18),
+            ]))
+        #expect(t.seedCount == 125)
+        #expect(t.availablePeerCount == 165)
+    }
+
+    @Test("no trackerStats yields zero totals even with nonzero peersFrom")
+    func noStats() {
+        // makeWire carries nonzero peersFrom; totals still come from trackers.
+        let t = Torrent(wire: makeWire())
+        #expect(t.seedCount == 0)
+        #expect(t.availablePeerCount == 0)
     }
 }
 
@@ -485,6 +585,7 @@ struct TrackerMappingTests {
     ) -> WireTrackerStat {
         WireTrackerStat(
             id: 1, tier: 0, host: "tracker.example.com",
+            announce: "https://tracker.example.com/announce",
             lastAnnounceResult: lastAnnounceResult,
             lastAnnounceTime: lastAnnounceTime,
             lastAnnounceSucceeded: lastAnnounceSucceeded,
@@ -590,6 +691,7 @@ struct TorrentInspectorMappingTests {
         wire.trackerStats = [
             WireTrackerStat(
                 id: 1, tier: 0, host: "rich.example.com",
+                announce: "https://rich.example.com/announce",
                 lastAnnounceResult: "", lastAnnounceTime: 0,
                 lastAnnounceSucceeded: true, hasAnnounced: true,
                 announceState: 1, seederCount: 5, leecherCount: 2,
@@ -598,6 +700,10 @@ struct TorrentInspectorMappingTests {
         let t = Torrent(wire: wire)
         // stat.host is an FQDN, so it's used directly
         #expect(t.trackers.first?.host == "rich.example.com")
+        #expect(t.trackers.first?.announce == "https://rich.example.com/announce")
+        // The announce URL, not the host, identifies a tracker: two entries can
+        // share a host on different schemes.
+        #expect(t.trackers.first?.id == "https://rich.example.com/announce")
         #expect(t.trackers.first?.seedCount == 5)
     }
 
@@ -609,6 +715,7 @@ struct TorrentInspectorMappingTests {
         wire.trackerStats = [
             WireTrackerStat(
                 id: 1, tier: 0, host: "tracker.opentrackr.org:1337",
+                announce: "udp://tracker.opentrackr.org:1337/announce",
                 lastAnnounceResult: "", lastAnnounceTime: 0,
                 lastAnnounceSucceeded: true, hasAnnounced: true,
                 announceState: 1, seederCount: 5, leecherCount: 2,
@@ -624,10 +731,41 @@ struct TorrentInspectorMappingTests {
 
 // MARK: - RPCTorrentService stream lifecycle
 
-@Suite("RPCTorrentService — stream lifecycle")
+@Suite("RPCTorrentService — stream lifecycle", .serialized)
 struct RPCTorrentServiceTests {
     private actor StubClient: TransmissionClient {
         private(set) var callCount = 0
+        private(set) var fullPolls = 0
+        private var fullPollTorrents: [WireTorrent] = []
+        private var incrementalTorrents: [WireTorrent] = []
+
+        /// Which response a test can hold, so it lands after the snapshot it
+        /// must no longer be allowed to write.
+        enum Gate: Equatable {
+            case full
+            case incremental
+        }
+
+        private var nextGate: Gate?
+        private var gate: CheckedContinuation<Void, Never>?
+        private(set) var isGated = false
+
+        func setStubTorrents(full: [WireTorrent], incremental: [WireTorrent] = []) {
+            fullPollTorrents = full
+            incrementalTorrents = incremental
+        }
+
+        /// Answer the next request of this kind from current state, then block
+        /// until `release()`.
+        func holdNextResponse(_ kind: Gate) {
+            nextGate = kind
+        }
+
+        func release() {
+            gate?.resume()
+            gate = nil
+            isGated = false
+        }
 
         func sessionGet() async throws(TransmissionError) -> SessionInfo {
             throw TransmissionError.serverError("not used in test")
@@ -637,14 +775,39 @@ struct RPCTorrentServiceTests {
             throw TransmissionError.serverError("not used in test")
         }
 
-        func torrentGet(fields: [String], ids: [Int]?) async throws(TransmissionError)
+        func torrentGet(fields: [String], ids: TorrentIDs?) async throws(TransmissionError)
             -> TorrentGetResponse
         {
             callCount += 1
-            return TorrentGetResponse(torrents: [])
+            let kind: Gate
+            let response: TorrentGetResponse
+            if ids == nil {
+                fullPolls += 1
+                kind = .full
+                response = TorrentGetResponse(torrents: fullPollTorrents)
+            } else {
+                kind = .incremental
+                response = TorrentGetResponse(torrents: incrementalTorrents)
+            }
+            if nextGate == kind {
+                nextGate = nil
+                await withCheckedContinuation { continuation in
+                    gate = continuation
+                    isGated = true
+                }
+            }
+            return response
         }
 
-        func torrentAction(_ method: String, ids: [Int]) async throws(TransmissionError) {}
+        func torrentAction(_ method: String, ids: [Int]) async throws(TransmissionError) {
+            guard method == "torrent-stop" else { return }
+            for index in fullPollTorrents.indices where ids.contains(fullPollTorrents[index].id) {
+                fullPollTorrents[index].status = 0
+            }
+            for index in incrementalTorrents.indices where ids.contains(incrementalTorrents[index].id) {
+                incrementalTorrents[index].status = 0
+            }
+        }
         func torrentRemove(ids: [Int], deleteLocalData: Bool) async throws(TransmissionError) {}
         func torrentSet(_ args: TorrentSetArguments) async throws(TransmissionError) {}
         func torrentAdd(_ args: TorrentAddArguments) async throws(TransmissionError)
@@ -653,6 +816,11 @@ struct RPCTorrentServiceTests {
             TorrentAddResponse(torrentAdded: nil, torrentDuplicate: nil)
         }
         func torrentSetLocation(_ args: TorrentSetLocationArguments) async throws(TransmissionError) {}
+        func torrentRenamePath(_ args: TorrentRenamePathArguments) async throws(TransmissionError)
+            -> TorrentRenamePathResponse
+        {
+            TorrentRenamePathResponse(id: args.ids.first ?? 0, path: args.path, name: args.name)
+        }
         func sessionSet(_ args: SessionSetArguments) async throws(TransmissionError) {}
         func portTest() async throws(TransmissionError) -> Bool { true }
     }
@@ -690,6 +858,130 @@ struct RPCTorrentServiceTests {
         let after = await stub.callCount
         #expect(after >= before + 1)
     }
+
+    @Test("a mutation refresh seeds the cache later incremental polls merge into")
+    func mutationRefreshSeedsCache() async throws {
+        let stub = StubClient()
+        await stub.setStubTorrents(full: [makeWire(status: 4)])
+        let service = RPCTorrentService(
+            client: stub, pollingInterval: { 60 }, incrementalPollingInterval: { 1 })
+
+        let stream = await service.torrentsStream()
+        var iterator = stream.makeAsyncIterator()
+        let initial = try #require(try await iterator.next())
+        #expect(initial.first?.status == .downloading)
+
+        try await service.stop([1])
+        let afterStop = try #require(try await iterator.next())
+        #expect(afterStop.first?.status == .paused)
+
+        // The next tick is incremental and the stub reports no changes, so the
+        // emitted snapshot is the cache — which must carry the stop.
+        let next = try #require(try await iterator.next())
+        #expect(next.first?.status == .paused)
+    }
+
+    @Test("a new stream starts from a full poll instead of the old cache")
+    func newStreamStartsFull() async throws {
+        let stub = StubClient()
+        await stub.setStubTorrents(
+            full: [makeWire(status: 4)], incremental: [makeWire(status: 6)])
+        let service = RPCTorrentService(
+            client: stub, pollingInterval: { 60 }, incrementalPollingInterval: { 60 })
+
+        let firstStream = await service.torrentsStream()
+        var first = firstStream.makeAsyncIterator()
+        let initial = try #require(try await first.next())
+        #expect(initial.first?.status == .downloading)
+
+        // The daemon now reports an empty list. Reusing the old cache or the old
+        // full-poll clock would emit the incremental torrent instead.
+        await stub.setStubTorrents(full: [])
+        let secondStream = await service.torrentsStream()
+        var second = secondStream.makeAsyncIterator()
+        let snapshot = try #require(try await second.next())
+        #expect(snapshot.isEmpty)
+        #expect(await stub.fullPolls >= 2)
+    }
+
+    @Test("a polling-preference change cuts the current sleep short")
+    func intervalChangeWakesLoop() async throws {
+        let stub = StubClient()
+        let service = RPCTorrentService(
+            client: stub, pollingInterval: { 2 }, incrementalPollingInterval: { 2 })
+
+        let stream = await service.torrentsStream()
+        var iterator = stream.makeAsyncIterator()
+        _ = try await iterator.next()
+        // Let the loop reach its sleep before posting.
+        try await Task.sleep(for: .milliseconds(100))
+
+        let posted = Date()
+        NotificationCenter.default.post(name: PollingIntervals.changed, object: nil)
+        _ = try await iterator.next()
+        // Without the wake-up this would wait out the whole 2-second interval.
+        #expect(Date().timeIntervalSince(posted) < 1.5)
+    }
+
+    @Test("a response from a replaced stream cannot seed the new stream's cache")
+    func replacedStreamResponseDropped() async throws {
+        let stub = StubClient()
+        await stub.setStubTorrents(full: [makeWire(id: 99, status: 4)])
+        let service = RPCTorrentService(
+            client: stub, pollingInterval: { 60 }, incrementalPollingInterval: { 1 })
+
+        // The first stream's initial full poll answers with id 99, then hangs.
+        await stub.holdNextResponse(.full)
+        // Held for the whole test: dropping the stream would cancel the loop
+        // before it ever reaches the gate.
+        let firstStream = await service.torrentsStream()
+        while !(await stub.isGated) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        // A new stream cancels the first and resets the cache; the daemon now
+        // reports a different torrent.
+        await stub.setStubTorrents(full: [makeWire(id: 2, status: 4)])
+        let secondStream = await service.torrentsStream()
+        var second = secondStream.makeAsyncIterator()
+        let initial = try #require(try await second.next())
+        #expect(initial.map(\.id) == [2])
+
+        // The cancelled response lands late and must not resurrect id 99.
+        await stub.release()
+        let next = try #require(try await second.next())
+        #expect(next.map(\.id) == [2])
+        withExtendedLifetime(firstStream) {}
+    }
+
+    @Test("an incremental response that lost to a mutation refresh is dropped")
+    func staleIncrementalDropped() async throws {
+        let stub = StubClient()
+        await stub.setStubTorrents(
+            full: [makeWire(status: 4)], incremental: [makeWire(status: 4)])
+        let service = RPCTorrentService(
+            client: stub, pollingInterval: { 60 }, incrementalPollingInterval: { 1 })
+
+        let stream = await service.torrentsStream()
+        var iterator = stream.makeAsyncIterator()
+        let initial = try #require(try await iterator.next())
+        #expect(initial.first?.status == .downloading)
+
+        // The next tick answers from pre-stop state, then hangs.
+        await stub.holdNextResponse(.incremental)
+        while !(await stub.isGated) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        try await service.stop([1])
+        let afterStop = try #require(try await iterator.next())
+        #expect(afterStop.first?.status == .paused)
+
+        // The stale tick lands after the refresh and must not revert the stop.
+        await stub.release()
+        let next = try #require(try await iterator.next())
+        #expect(next.first?.status == .paused)
+    }
 }
 
 // MARK: - Labels mapping
@@ -721,28 +1013,35 @@ struct LabelMappingTests {
 struct RPCSetLabelsTests {
     private actor StubClient: TransmissionClient {
         private let rpcVersion: Int
+        private var sessionGetError: TransmissionError?
         private(set) var sessionGetCount = 0
         private(set) var setCallCount = 0
         private(set) var lastSetIDs: [Int]?
         private(set) var lastSetLabels: [String]?
         private var appliedLabels: [String]?
 
-        init(rpcVersion: Int) {
+        init(rpcVersion: Int, sessionGetError: TransmissionError? = nil) {
             self.rpcVersion = rpcVersion
+            self.sessionGetError = sessionGetError
+        }
+
+        func setSessionGetError(_ error: TransmissionError?) {
+            sessionGetError = error
         }
 
         func sessionGet() async throws(TransmissionError) -> SessionInfo {
             sessionGetCount += 1
+            if let sessionGetError { throw sessionGetError }
             return SessionInfo(
                 version: "test", rpcVersion: rpcVersion, rpcVersionMinimum: 16,
-                downloadDirFreeSpace: 0, altSpeedEnabled: false, downloadDir: "/x")
+                downloadDirFreeSpace: 42, altSpeedEnabled: false, downloadDir: "/x")
         }
 
         func sessionStats() async throws(TransmissionError) -> SessionStats {
             throw TransmissionError.serverError("not used in test")
         }
 
-        func torrentGet(fields: [String], ids: [Int]?) async throws(TransmissionError)
+        func torrentGet(fields: [String], ids: TorrentIDs?) async throws(TransmissionError)
             -> TorrentGetResponse
         {
             TorrentGetResponse(torrents: [makeWire(labels: appliedLabels)])
@@ -766,6 +1065,11 @@ struct RPCSetLabelsTests {
 
         func sessionSet(_ args: SessionSetArguments) async throws(TransmissionError) {}
         func torrentSetLocation(_ args: TorrentSetLocationArguments) async throws(TransmissionError) {}
+        func torrentRenamePath(_ args: TorrentRenamePathArguments) async throws(TransmissionError)
+            -> TorrentRenamePathResponse
+        {
+            TorrentRenamePathResponse(id: args.ids.first ?? 0, path: args.path, name: args.name)
+        }
         func portTest() async throws(TransmissionError) -> Bool { true }
     }
 
@@ -831,6 +1135,21 @@ struct RPCSetLabelsTests {
         let service = RPCTorrentService(client: stub, pollingInterval: { 60 })
         #expect(await service.supportsLabels() == true)
     }
+
+    @Test("a failed session-get keeps the last-known-good cache")
+    func freeSpaceKeepsCacheOnFailure() async throws {
+        let stub = StubClient(rpcVersion: 16)
+        let service = RPCTorrentService(client: stub, pollingInterval: { 60 })
+
+        #expect(await service.freeSpace() == 42)
+        #expect(await service.supportsLabels() == false)
+
+        await stub.setSessionGetError(.serverError("offline"))
+
+        // A transient failure must not wipe the cache or flip capabilities.
+        #expect(await service.freeSpace() == 42)
+        #expect(await service.supportsLabels() == false)
+    }
 }
 
 // MARK: - Inspector metadata mapping
@@ -883,6 +1202,68 @@ struct MetadataMappingTests {
         #expect(t.magnetLink == nil)
     }
 
+    @Test("completion and lifetime fields map onto the model")
+    func lifetimeFieldsMap() {
+        let t = Torrent(
+            wire: makeWire(
+                doneDate: 1_700_002_000,
+                startDate: 1_700_000_100,
+                secondsDownloading: 3_600,
+                secondsSeeding: 7_200,
+                leftUntilDone: 1_024,
+                sizeWhenDone: 204_800
+            ))
+        #expect(t.completedAt == Date(timeIntervalSince1970: 1_700_002_000))
+        #expect(t.startedAt == Date(timeIntervalSince1970: 1_700_000_100))
+        #expect(t.secondsDownloading == 3_600)
+        #expect(t.secondsSeeding == 7_200)
+        #expect(t.leftUntilDone == 1_024)
+        #expect(t.sizeWhenDone == 204_800)
+    }
+
+    @Test("zero doneDate and startDate collapse to nil; absent counters default to 0")
+    func lifetimeDefaults() {
+        let t = Torrent(wire: makeWire(doneDate: 0, startDate: 0))
+        #expect(t.completedAt == nil)
+        #expect(t.startedAt == nil)
+        #expect(t.secondsDownloading == 0)
+        #expect(t.secondsSeeding == 0)
+        #expect(t.leftUntilDone == 0)
+        #expect(t.sizeWhenDone == 0)
+    }
+
+    @Test("limit fields map onto options; seed modes collapse to limited flags")
+    func limitFieldsMapToOptions() {
+        let t = Torrent(
+            wire: makeWire(
+                downloadLimit: 2_000,
+                downloadLimited: true,
+                uploadLimit: 500,
+                uploadLimited: false,
+                honorsSessionLimits: false,
+                seedRatioLimit: 2.5,
+                seedRatioMode: 1,
+                seedIdleLimit: 45,
+                seedIdleMode: 0,
+                peerLimit: 80
+            ))
+        #expect(t.options.downloadLimited)
+        #expect(t.options.downloadLimitKBps == 2_000)
+        #expect(!t.options.uploadLimited)
+        #expect(!t.options.honorsSessionLimits)
+        #expect(t.options.seedRatioLimited)
+        #expect(t.options.seedRatioLimit == 2.5)
+        #expect(!t.options.seedIdleLimited)
+        #expect(t.options.seedIdleMinutes == 45)
+        #expect(t.options.peerLimit == 80)
+    }
+
+    @Test("absent limit fields fall back to option defaults")
+    func limitDefaults() {
+        let t = Torrent(wire: makeWire())
+        #expect(t.options == TorrentOptions())
+    }
+
     @Test("mergingMetadata overlays metadata but keeps live transfer state")
     func mergingMetadataOverlays() {
         var live = Torrent(wire: makeWire(status: 4))
@@ -902,5 +1283,44 @@ struct MetadataMappingTests {
 
         // nil detail → unchanged.
         #expect(live.mergingMetadata(from: nil).comment == nil)
+    }
+}
+
+// MARK: - Column sort keys (sentinel handling)
+
+@Suite("Torrent — column sort keys")
+struct ColumnSortKeyTests {
+    @Test("missing dates (zero daemon timestamps) sort after real dates")
+    func missingDatesSortLast() {
+        let dated = Torrent(
+            wire: makeWire(activityDate: 1_700_000_000, doneDate: 1_700_000_000, startDate: 1_700_000_000))
+        let missing = Torrent(wire: makeWire())
+        #expect(dated.completedAtSortKey < missing.completedAtSortKey)
+        #expect(dated.startedAtSortKey < missing.startedAtSortKey)
+        #expect(dated.lastActivityAtSortKey < missing.lastActivityAtSortKey)
+    }
+
+    @Test("unlimited limits sort after explicit limits")
+    func unlimitedLimitsSortLast() {
+        let capped = Torrent(
+            wire: makeWire(
+                downloadLimit: 500, downloadLimited: true,
+                uploadLimit: 100, uploadLimited: true,
+                seedRatioLimit: 2.0, seedRatioMode: 1,
+                seedIdleLimit: 30, seedIdleMode: 1
+            ))
+        let open = Torrent(wire: makeWire())
+        #expect(capped.downloadLimitSortKey < open.downloadLimitSortKey)
+        #expect(capped.uploadLimitSortKey < open.uploadLimitSortKey)
+        #expect(capped.seedRatioLimitSortKey < open.seedRatioLimitSortKey)
+        #expect(capped.seedIdleLimitSortKey < open.seedIdleLimitSortKey)
+    }
+
+    @Test("seed mode 2 (unlimited) is not a limit")
+    func seedModeUnlimitedIsNotLimited() {
+        let t = Torrent(
+            wire: makeWire(seedRatioLimit: 5.0, seedRatioMode: 2, seedIdleLimit: 60, seedIdleMode: 2))
+        #expect(!t.options.seedRatioLimited)
+        #expect(!t.options.seedIdleLimited)
     }
 }

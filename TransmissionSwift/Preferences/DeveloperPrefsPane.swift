@@ -58,12 +58,8 @@ struct DeveloperPrefsPane: View {
                 Toggle("Limit torrent count", isOn: $limitEnabled)
                 if limitEnabled {
                     LabeledContent("Max torrents") {
-                        HStack {
-                            TextField("", value: $limitValue, format: .number)
-                                .frame(width: 52)
-                            Stepper("", value: $limitValue, in: 1...500, step: 1)
-                                .labelsHidden()
-                        }
+                        TextField("", value: $limitValue, format: .number)
+                            .frame(width: 52)
                     }
                 }
             } header: {
@@ -117,7 +113,7 @@ struct DeveloperPrefsPane: View {
                 Alert(
                     title: Text("Snapshot Saved"),
                     message: Text(
-                        "Captured \(capture.torrentCount) of \(torrentStore.torrents.count) torrents from \(torrentStore.downloadDirectory ?? "the connected server").\n\(capture.summary.summaryText)\n\n\(url.path)"
+                        "Captured \(capture.torrentCount) of \(torrentStore.list.torrents.count) torrents from \(torrentStore.list.downloadDirectory ?? "the connected server").\n\(capture.summary.summaryText)\n\n\(url.path)"
                     )
                 )
             case .failed(let message):

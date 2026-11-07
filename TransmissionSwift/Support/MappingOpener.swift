@@ -20,11 +20,23 @@ enum MappingOpener {
         file: TorrentFile?,
         profile: ServerProfile,
         store: TorrentStore,
-        profileStore: ServerProfileStore
+        mappingStore: OpenMappingStore
     ) async {
         // The password lives in the Keychain, not on the profile. Reading it is
         // a user-initiated action, so a transient keychain prompt is acceptable.
-        let password = (try? KeychainStore().password(for: profile.id)) ?? nil
+        // Only fail the whole open when the template actually needs it — a locked
+        // Keychain shouldn't block a password-less mapping.
+        let password: String?
+        do {
+            password = try KeychainStore().password(for: profile.id)
+        } catch {
+            if MappingTemplate.needsPassword(mapping.template) {
+                store.lastActionError = .failed(
+                    message: "Couldn't read the saved password from the Keychain.")
+                return
+            }
+            password = nil
+        }
         // From the torrent list the file list isn't fetched; `{file}` needs it
         // to tell a single-file torrent (open the file) from a multi-file one
         // (open the folder), so resolve it on demand.
@@ -35,7 +47,7 @@ enum MappingOpener {
                 torrent: resolved,
                 server: profile,
                 password: password,
-                defaultDownloadDirectory: store.downloadDirectory,
+                defaultDownloadDirectory: store.list.downloadDirectory,
                 file: file)
         else {
             store.lastActionError = .failed(message: "Could not build a URL from “\(mapping.template)”")
@@ -50,9 +62,11 @@ enum MappingOpener {
         }
 
         // A stored bookmark grants access to the mapped folder (persisted from
-        // an earlier Allow prompt). Activate its scope for the duration of the
-        // open so LaunchServices accepts the URL.
-        if let scopeURL = resolveBookmark(mapping.accessBookmark) {
+        // an earlier Allow prompt). A mapping may span servers whose files live
+        // in different folders, so trust only the bookmark whose folder contains
+        // the target; activate its scope for the duration of the open. Otherwise
+        // fall through and prompt.
+        if let scopeURL = grantedScopeURL(for: url, bookmarks: mapping.accessBookmarks) {
             let accessing = scopeURL.startAccessingSecurityScopedResource()
             defer { if accessing { scopeURL.stopAccessingSecurityScopedResource() } }
             dispatch(url, mapping: mapping, store: store)
@@ -63,7 +77,7 @@ enum MappingOpener {
         case .finder:
             revealInFinder(url, store: store)
         case .open:
-            promptForAccess(to: url, mapping: mapping, profile: profile, store: store, profileStore: profileStore)
+            promptForAccess(to: url, mapping: mapping, store: store, mappingStore: mappingStore)
         }
     }
 
@@ -73,10 +87,11 @@ enum MappingOpener {
         case .finder:
             revealInFinder(url, store: store)
         case .open:
-            if let bundleID = mapping.applicationBundleID, !bundleID.isEmpty {
-                openInApp(bundleID: bundleID, url: url, store: store)
-            } else if !NSWorkspace.shared.open(url) {
-                store.lastActionError = .failed(message: "Could not open \(url.absoluteString)")
+            MappingLauncher.open(url: url, applicationBundleID: mapping.applicationBundleID) {
+                outcome in
+                if case .failed(let message) = outcome {
+                    store.lastActionError = .failed(message: message)
+                }
             }
         }
     }
@@ -91,29 +106,33 @@ enum MappingOpener {
                 message: "“Reveal in Finder” needs a file:// URL, got \(url.scheme ?? "none").")
             return
         }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        MappingLauncher.revealInFinder(url)
     }
 
-    /// Resolves a stored security-scoped bookmark back to a folder URL, or nil.
-    private static func resolveBookmark(_ data: Data?) -> URL? {
-        guard let data else { return nil }
-        var isStale = false
-        return try? URL(
-            resolvingBookmarkData: data,
-            options: .withSecurityScope,
-            relativeTo: nil,
-            bookmarkDataIsStale: &isStale)
+    /// The stored bookmark whose folder contains `url`, if any. Activating a
+    /// bookmark only grants its own subtree, so a mapping that spans servers
+    /// must check the target against each grant before trusting one.
+    private static func grantedScopeURL(for url: URL, bookmarks: [Data]) -> URL? {
+        let target = url.standardizedFileURL.path
+        for data in bookmarks {
+            guard let scopeURL = MappingLauncher.resolveBookmark(data) else { continue }
+            let folder = scopeURL.standardizedFileURL.path
+            let prefix = folder.hasSuffix("/") ? folder : folder + "/"
+            if target == folder || target.hasPrefix(prefix) {
+                return scopeURL
+            }
+        }
+        return nil
     }
 
-    /// No bookmark yet, so the user must grant access to the folder once.
-    /// Persist the grant as a security-scoped bookmark on the mapping, then
-    /// retry the open with the scope active.
+    /// No bookmark covers `url` yet, so the user must grant access to the folder
+    /// once. Append the grant to the mapping's bookmarks, then retry the open
+    /// with the scope active.
     private static func promptForAccess(
         to url: URL,
         mapping: OpenMapping,
-        profile: ServerProfile,
         store: TorrentStore,
-        profileStore: ServerProfileStore
+        mappingStore: OpenMappingStore
     ) {
         let folder = url.deletingLastPathComponent()
         let panel = NSOpenPanel()
@@ -129,35 +148,20 @@ enum MappingOpener {
             guard response == .OK, let granted = panel.url else { return }
             do {
                 var updated = mapping
-                updated.accessBookmark = try granted.bookmarkData(
+                let bookmark = try granted.bookmarkData(
                     options: .withSecurityScope,
                     includingResourceValuesForKeys: nil,
                     relativeTo: nil)
-                try profileStore.replaceMapping(updated, inProfile: profile.id)
+                if !updated.accessBookmarks.contains(bookmark) {
+                    updated.accessBookmarks.append(bookmark)
+                }
+                try mappingStore.replace(updated)
                 let accessing = granted.startAccessingSecurityScopedResource()
                 defer { if accessing { granted.stopAccessingSecurityScopedResource() } }
                 dispatch(url, mapping: mapping, store: store)
             } catch {
                 store.lastActionError = .failed(
                     message: "Could not save the access permission: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private static func openInApp(bundleID: String, url: URL, store: TorrentStore) {
-        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            store.lastActionError = .failed(message: "Could not find the app for “\(bundleID)”")
-            return
-        }
-        // Route the URL to the specific app via LaunchServices; the app receives
-        // it exactly like a normal open. Errors arrive on the completion handler.
-        NSWorkspace.shared.open(
-            [url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()
-        ) { _, error in
-            if let error {
-                Task { @MainActor in
-                    store.lastActionError = .failed(message: error.localizedDescription)
-                }
             }
         }
     }

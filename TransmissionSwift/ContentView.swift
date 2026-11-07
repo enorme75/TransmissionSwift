@@ -8,10 +8,19 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     /// True when replaying a captured snapshot file (`--snapshot`).
     let snapshotMode: Bool
+    /// True for non-interactive sessions (snapshot replay, ephemeral test
+    /// profiles) where the first-run splash must not appear.
+    let disableOnboarding: Bool
 
-    private let keychain = KeychainStore()
+    @State private var connection: ConnectionCoordinator
     @State private var hasAppeared = false
-    @State private var connectedProfileID: ServerProfile.ID?
+    @State private var showsCrashReportingConsent = false
+
+    init(store: TorrentStore, snapshotMode: Bool, disableOnboarding: Bool) {
+        self.snapshotMode = snapshotMode
+        self.disableOnboarding = disableOnboarding
+        _connection = State(initialValue: ConnectionCoordinator(store: store))
+    }
 
     var body: some View {
         Group {
@@ -27,8 +36,18 @@ struct ContentView: View {
                 MainWindow()
                     .task(id: profileStore.activeProfile?.id) {
                         guard let profile = profileStore.activeProfile else { return }
-                        await connectToProfile(profile)
+                        await connection.connect(to: profile)
                     }
+            }
+        }
+        .overlay {
+            if showsCrashReportingConsent {
+                CrashReportingConsentView { enabled in
+                    CrashReporting.setConsent(enabled: enabled)
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showsCrashReportingConsent = false
+                    }
+                }
             }
         }
         .onChange(of: scenePhase) { _, new in
@@ -38,52 +57,67 @@ struct ContentView: View {
                 torrentStore.resumePolling()
             }
         }
+        // Stop sharing the live service with App Intents once the app drops the
+        // connection; otherwise an intent keeps talking to a dead connection.
+        .onChange(of: torrentStore.connection) { _, new in
+            connection.connectionStateChanged(new)
+        }
         .onDisappear { torrentStore.pausePolling() }
         .onAppear {
             if hasAppeared { torrentStore.resumePolling() }
             hasAppeared = true
+            showsCrashReportingConsent = shouldOfferCrashReportingConsent
         }
+        // Donate the server list to Spotlight once at launch. (Torrents are
+        // donated by Get Torrents to avoid indexing on every poll.)
+        .task { await SpotlightIndexer.indexServers(profileStore.profiles) }
+        .environment(connection)
     }
 
-    /// True when running as Xcode's test-host or preview process. The launch
-    /// auto-connect reads the Keychain, and doing that from these freshly
-    /// re-signed binaries triggers a keychain authorization prompt even though
-    /// nothing user-initiated asked for the password.
-    private var isXcodeAuxiliaryProcess: Bool {
-        let env = ProcessInfo.processInfo.environment
-        return env["XCTestConfigurationFilePath"] != nil || env["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
+    /// Show the first-run splash only for a real, interactive, DSN-carrying
+    /// build that has not answered yet. The answer is persisted by
+    /// `CrashReporting.setConsent`, so this stays false afterwards.
+    private var shouldOfferCrashReportingConsent: Bool {
+        !disableOnboarding && !AppProcess.isXcodeAuxiliary && CrashReporting.isConfigured
+            && CrashReporting.needsConsent
     }
+}
 
-    @MainActor
-    private func connectToProfile(_ profile: ServerProfile) async {
-        // Skip the launch auto-connect under the test runner / previews — no
-        // connection is needed there, and reading the Keychain prompts.
-        if isXcodeAuxiliaryProcess { return }
+// MARK: - First-run crash-reporting consent
 
-        // Window was closed and reopened while already connected to this same
-        // profile — onAppear's resumePolling() already restarted the stream.
-        if case .connected = torrentStore.connection, connectedProfileID == profile.id { return }
+/// The first-run splash. Explains the opt-in in one breath and lets the user
+/// enable or decline. `onDecision` persists the answer and dismisses.
+private struct CrashReportingConsentView: View {
+    let onDecision: (Bool) -> Void
 
-        guard let rpcURL = profile.rpcURL else {
-            torrentStore.setConnectionFailed(reason: "Invalid server URL")
-            return
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "ladybug.fill")
+                .font(.system(size: 40))
+                .foregroundStyle(.secondary)
+            Text("Help improve TransmissionSwift")
+                .font(.title2.weight(.semibold))
+            Text("Send anonymous crash reports? \(CrashReporting.privacySummary)")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 380)
+            Text("You can change this later in Settings.")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+            HStack(spacing: 12) {
+                Button("Not Now") { onDecision(false) }
+                    .accessibilityIdentifier("crashConsent.decline")
+                Button("Enable Crash Reports") { onDecision(true) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("crashConsent.accept")
+            }
+            .padding(.top, 4)
         }
-        var credentials: Credentials?
-        if let username = profile.username, !username.isEmpty {
-            // Cancel the mock stream and show "waiting for keychain" before
-            // the macOS dialog blocks — prevents the mock from racing back.
-            torrentStore.beginKeychainWait()
-            let profileID = profile.id
-            let kc = keychain
-            let password = await Task.detached(priority: .userInitiated) {
-                (try? kc.password(for: profileID)) ?? ""
-            }.value
-            guard !Task.isCancelled else { return }
-            credentials = Credentials(username: username, password: password)
-        }
-        let client = URLSessionTransmissionClient(rpcURL: rpcURL, credentials: credentials)
-        let service = RPCTorrentService(client: client)
-        torrentStore.connect(service: service)
-        connectedProfileID = profile.id
+        .padding(48)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial)
+        .contentShape(Rectangle())
     }
 }

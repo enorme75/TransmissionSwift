@@ -8,10 +8,15 @@ import TransmissionCore
 struct StatusBarView: View {
     @Environment(TorrentStore.self) private var store
     @Environment(ServerProfileStore.self) private var profileStore
+    @Environment(\.openURL) private var openURL
+    @AppStorage(PreferenceKeys.badgeAppIcon) private var badgeAppIcon = false
+    @AppStorage(PreferenceKeys.showDonateButton) private var showDonateButton = true
+    @AppStorage(PreferenceKeys.showBugReportButton) private var showBugReportButton = true
     @State private var showServerStats = false
 
     var body: some View {
         HStack(spacing: 14) {
+            supportButtons
             switch store.connection {
             case .connecting:
                 let name = profileStore.activeProfile?.label ?? "server"
@@ -43,6 +48,50 @@ struct StatusBarView: View {
         .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28)
         .background(.regularMaterial)
         .overlay(alignment: .top) { Divider() }
+        .onAppear { updateDockBadge() }
+        .onChange(of: activeCount) { _, _ in updateDockBadge() }
+        .onChange(of: badgeAppIcon) { _, _ in updateDockBadge() }
+    }
+
+    @ViewBuilder
+    private var supportButtons: some View {
+        if showDonateButton || showBugReportButton {
+            HStack(spacing: 10) {
+                if showDonateButton { donateButton }
+                if showBugReportButton { reportBugButton }
+            }
+            Divider().frame(height: 14)
+        }
+    }
+
+    private var reportBugButton: some View {
+        Button {
+            if let url = BugReport.url(daemonVersion: store.session.daemonVersion) {
+                openURL(url)
+            }
+        } label: {
+            Image(systemName: "ladybug")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .help("Report a bug on GitHub")
+        .foregroundStyle(Color(NSColor.secondaryLabelColor))
+        .accessibilityIdentifier("statusBar.reportBug")
+    }
+
+    private var donateButton: some View {
+        Button {
+            if let url = URL(string: "https://transmissionswift.jvacek.eu/donate/") {
+                openURL(url)
+            }
+        } label: {
+            Image(systemName: "heart")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .help("Support TransmissionSwift")
+        .foregroundStyle(.pink)
+        .accessibilityIdentifier("statusBar.donate")
     }
 
     private var leftCluster: some View {
@@ -60,7 +109,7 @@ struct StatusBarView: View {
             .popover(isPresented: $showServerStats, arrowEdge: .bottom) {
                 ServerStatsPopoverView()
             }
-            Text("\(store.torrents.count) torrents · \(activeCount) active")
+            Text("\(store.list.torrents.count) torrents · \(activeCount) active")
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
                 .accessibilityIdentifier("statusBar.count")
@@ -72,20 +121,21 @@ struct StatusBarView: View {
             speedLabel(total: totalDown, systemImage: "arrow.down", color: .blue, capKBps: effectiveDownCapKBps)
             speedLabel(total: totalUp, systemImage: "arrow.up", color: .green, capKBps: effectiveUpCapKBps)
             Button {
-                Task { await store.toggleAlternativeSpeed() }
+                Task { await store.session.toggleAlternativeSpeed() }
             } label: {
-                Image(systemName: store.isAlternativeSpeedEnabled ? "tortoise.fill" : "tortoise")
+                Image(systemName: store.session.isAlternativeSpeedEnabled ? "tortoise.fill" : "tortoise")
             }
             .buttonStyle(.borderless)
             .disabled(!store.actionsEnabled)
             .help("Alternative speed limits")
             .foregroundStyle(
-                store.isAlternativeSpeedEnabled ? Color(NSColor.controlAccentColor) : Color(NSColor.secondaryLabelColor)
+                store.session.isAlternativeSpeedEnabled
+                    ? Color(NSColor.controlAccentColor) : Color(NSColor.secondaryLabelColor)
             )
-            if let freeSpace = store.freeSpace {
+            if let freeSpace = store.session.freeSpace {
                 Divider().frame(height: 14)
                 Button {
-                    Task { await store.refreshFreeSpace() }
+                    Task { await store.session.refreshFreeSpace() }
                 } label: {
                     Label(ColumnFormatters.humanizedSize(freeSpace) + " free", systemImage: "internaldrive")
                         .foregroundStyle(.secondary)
@@ -117,25 +167,31 @@ struct StatusBarView: View {
     /// Effective per-torrent speed cap in KB/s, whichever scheme is active:
     /// turtle limits win while `altSpeedEnabled`, otherwise the global limits.
     private var effectiveDownCapKBps: Int? {
-        guard let s = store.sessionSettings else { return nil }
+        guard let s = store.session.settings else { return nil }
         if s.altSpeedEnabled { return s.altSpeedDownKBps }
         if s.downLimited { return s.downLimitKBps }
         return nil
     }
     private var effectiveUpCapKBps: Int? {
-        guard let s = store.sessionSettings else { return nil }
+        guard let s = store.session.settings else { return nil }
         if s.altSpeedEnabled { return s.altSpeedUpKBps }
         if s.upLimited { return s.upLimitKBps }
         return nil
     }
 
     private var activeCount: Int {
-        store.torrents.filter { $0.status == .downloading || $0.status == .seeding }.count
+        store.list.torrents.filter(\.isActive).count
     }
-    private var totalDown: Int64 { store.torrents.reduce(0) { $0 + $1.downloadSpeed } }
-    private var totalUp: Int64 { store.torrents.reduce(0) { $0 + $1.uploadSpeed } }
+
+    /// Mirrors the active-torrent count onto the Dock icon when the
+    /// "Badge app icon" pref is on; cleared otherwise.
+    private func updateDockBadge() {
+        NSApp.dockTile.badgeLabel = (badgeAppIcon && activeCount > 0) ? "\(activeCount)" : ""
+    }
+    private var totalDown: Int64 { store.list.torrents.reduce(0) { $0 + $1.downloadSpeed } }
+    private var totalUp: Int64 { store.list.torrents.reduce(0) { $0 + $1.uploadSpeed } }
     private var overallRatio: Double {
-        guard !store.torrents.isEmpty else { return 0 }
-        return store.torrents.map(\.ratio).reduce(0, +) / Double(store.torrents.count)
+        guard !store.list.torrents.isEmpty else { return 0 }
+        return store.list.torrents.map(\.ratio).reduce(0, +) / Double(store.list.torrents.count)
     }
 }

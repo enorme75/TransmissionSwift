@@ -1,9 +1,10 @@
 import SwiftUI
 import TransmissionCore
+import TransmissionTestSupport
 
 // MARK: - Session-not-connected gate
 
-/// Shown in place of the Speed / Network / Seeding form while there is no live
+/// Shown in place of the Speed / Network / Transfers form while there is no live
 /// daemon connection to read or write session settings from.
 struct SessionNotConnectedView: View {
     var body: some View {
@@ -95,35 +96,35 @@ struct TurtleScheduleDays: View {
 /// reads the store's current value (defaulted when disconnected), and writes
 /// through `updateSessionSettings` (which diffs to a partial `session-set`).
 /// Lives in the app target because `Binding` is SwiftUI.
-extension TorrentStore {
+extension SessionModel {
     /// The daemon's session settings, falling back to the realistic sample so a
     /// connected-but-still-loading store (or a preview) renders populated forms.
-    var effectiveSessionSettings: SessionSettings { sessionSettings ?? .sample }
+    var effectiveSessionSettings: SessionSettings { settings ?? .sample }
 
     func binding(keyPath: WritableKeyPath<SessionSettings, Bool>) -> Binding<Bool> {
         Binding(
-            get: { self.sessionSettings?[keyPath: keyPath] ?? SessionSettings.sample[keyPath: keyPath] },
+            get: { self.settings?[keyPath: keyPath] ?? SessionSettings.sample[keyPath: keyPath] },
             set: { newValue in Task { await self.updateSessionSettings { $0[keyPath: keyPath] = newValue } } }
         )
     }
 
     func binding(keyPath: WritableKeyPath<SessionSettings, Int>) -> Binding<Int> {
         Binding(
-            get: { self.sessionSettings?[keyPath: keyPath] ?? SessionSettings.sample[keyPath: keyPath] },
+            get: { self.settings?[keyPath: keyPath] ?? SessionSettings.sample[keyPath: keyPath] },
             set: { newValue in Task { await self.updateSessionSettings { $0[keyPath: keyPath] = newValue } } }
         )
     }
 
     func binding(keyPath: WritableKeyPath<SessionSettings, Double>) -> Binding<Double> {
         Binding(
-            get: { self.sessionSettings?[keyPath: keyPath] ?? SessionSettings.sample[keyPath: keyPath] },
+            get: { self.settings?[keyPath: keyPath] ?? SessionSettings.sample[keyPath: keyPath] },
             set: { newValue in Task { await self.updateSessionSettings { $0[keyPath: keyPath] = newValue } } }
         )
     }
 
     func binding(keyPath: WritableKeyPath<SessionSettings, String>) -> Binding<String> {
         Binding(
-            get: { self.sessionSettings?[keyPath: keyPath] ?? SessionSettings.sample[keyPath: keyPath] },
+            get: { self.settings?[keyPath: keyPath] ?? SessionSettings.sample[keyPath: keyPath] },
             set: { newValue in Task { await self.updateSessionSettings { $0[keyPath: keyPath] = newValue } } }
         )
     }
@@ -159,5 +160,12 @@ let prefsPreviewProfileStore: ServerProfileStore = {
     try? store.add(ServerProfile(label: "Home NAS", host: "192.168.1.2", port: 9091))
     try? store.add(ServerProfile(label: "Seedbox", host: "seedbox.example.com", port: 9091))
     try? store.setActive(store.profiles.first!.id)
+    return store
+}()
+
+let prefsPreviewMappingStore: OpenMappingStore = {
+    let store = OpenMappingStore(
+        fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("mappings-preview-\(UUID().uuidString).json"))
     return store
 }()

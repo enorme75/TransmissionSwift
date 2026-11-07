@@ -12,6 +12,7 @@ enum TorrentRowAction {
     case removeAndDeleteData
     case editLabels
     case setLocation
+    case rename
 }
 
 struct TorrentTableRepresentable: NSViewRepresentable {
@@ -61,13 +62,13 @@ struct TorrentTableRepresentable: NSViewRepresentable {
         tableView.setAccessibilityIdentifier("torrents.table")
 
         // Column layout persistence: NSTableView autosaves order, widths and
-        // each column's isHidden state under autosaveName. All 20 columns are
-        // added up front (hidden-by-default ones start hidden per spec); on
-        // subsequent launches the autosave restores the user's layout over
-        // these defaults.
-        tableView.autosaveName = "torrentsTableColumns"
-        tableView.autosaveTableColumns = true
-
+        // each column's isHidden state under autosaveName. All columns are
+        // added up front with their defaults (hidden-by-default ones start
+        // hidden per spec). The autosave properties are set *after* the columns
+        // exist: AppKit's restore pass runs when the autosave name is set and
+        // matches saved state to columns by identifier, so setting it before
+        // any columns exist makes the restore a no-op and leaves every column
+        // at its default on each launch.
         let coordinator = context.coordinator
         coordinator.tableView = tableView
         for spec in TorrentTableColumns.all {
@@ -75,6 +76,15 @@ struct TorrentTableRepresentable: NSViewRepresentable {
             column.isHidden = spec.hiddenByDefault
             tableView.addTableColumn(column)
         }
+        // Grouped visibility menu: the native AppKit header menu is a flat
+        // list, unfindable at 30+ columns, so the header gets a custom menu
+        // with one submenu per `TorrentTableColumnGroup`. Toggling flips the
+        // real column's isHidden, so autosave persistence keeps working.
+        let headerMenu = coordinator.makeHeaderMenu()
+        coordinator.headerMenu = headerMenu
+        tableView.headerView?.menu = headerMenu
+        tableView.autosaveName = "torrentsTableColumns"
+        tableView.autosaveTableColumns = true
 
         // Row context menu: NSTableView has NO menuForRows delegate method. The
         // canonical mechanism is tableView.menu + NSMenuDelegate.menuNeedsUpdate,
@@ -155,15 +165,17 @@ struct TorrentTableRepresentable: NSViewRepresentable {
         var actionsEnabled = true
         var labelsSupported = true
         var tagColors: [String: TagColor] = [:]
-        private var lastTagColors: [String: TagColor] = [:]
         var onRowAction: ((TorrentRowAction, [Torrent.ID]) -> Void)?
         var onInspectorRequest: (() -> Void)?
         var mappings: [OpenMapping] = []
         var onOpenMapping: ((OpenMapping, [Torrent.ID]) -> Void)?
         weak var rowMenu: NSMenu?
+        weak var headerMenu: NSMenu?
 
-        private(set) var displayedRows: [TorrentRowDisplay] = []
-        private var lastDownloadDirectoryBase: String?
+        private var rowStore = TorrentTableRowStore()
+        /// Current projection, owned by `rowStore`; exposed for the
+        /// data-source, menu and delegate reads below.
+        private var displayedRows: [TorrentRowDisplay] { rowStore.displayedRows }
         private var lastAppliedSortState: SortState?
         private var isNormalizingSortDescriptors = false
         private var isRestoringSelection = false
@@ -204,49 +216,23 @@ struct TorrentTableRepresentable: NSViewRepresentable {
 
         /// Single funnel for all row mutations. Selection is a separate concern
         /// restored by `syncSelectionFromBinding` after every update; an
-        /// incremental diff can slot in here later without a redesign.
+        /// incremental diff can slot in here later without a redesign. The
+        /// decision is made by the pure `TorrentTableRowStore`; this only
+        /// performs the resulting AppKit side effect.
         func apply(rows newRows: [Torrent]) {
-            let newDisplays = newRows.map(TorrentRowDisplay.init)
-            let change = Self.classifyChange(from: displayedRows, to: newDisplays)
-            let baseChanged = downloadDirectoryBase != lastDownloadDirectoryBase
-            // Tag colours are external to the rows, so a change bypasses the
-            // poll guard and refreshes visible cells (make() recomputes each
-            // cell's colour, and the per-cell equality guard skips unchanged ones).
-            let colorsChanged = tagColors != lastTagColors
-            if colorsChanged { lastTagColors = tagColors }
-            guard change != .none || baseChanged || colorsChanged else { return }
-            displayedRows = newDisplays
-            lastDownloadDirectoryBase = downloadDirectoryBase
+            let update = rowStore.apply(
+                rows: newRows,
+                downloadDirectoryBase: downloadDirectoryBase,
+                tagColors: tagColors)
             guard let tableView else { return }
-            if change == .structural {
-                tableView.reloadData()
-            } else {
-                refreshVisibleCells(in: tableView)
+            switch update {
+            case .none: return
+            case .reload: tableView.reloadData()
+            case .refreshVisible: refreshVisibleCells(in: tableView)
             }
         }
 
-        /// One pass over both arrays, folding the old "id sequence" and
-        /// "field equality" guards into a single comparison so the poll never
-        /// pays for two full scans. `.structural` when the row set or id order
-        /// changed (reload), `.values` when only cell content changed (refresh
-        /// visible cells in place), `.none` when nothing moved.
-        static func classifyChange(
-            from old: [TorrentRowDisplay], to new: [TorrentRowDisplay]
-        ) -> TorrentTableRepresentable.Coordinator.ChangeKind {
-            guard old.count == new.count else { return .structural }
-            var valuesChanged = false
-            for (lhs, rhs) in zip(old, new) {
-                if lhs.id != rhs.id { return .structural }
-                if lhs != rhs { valuesChanged = true }
-            }
-            return valuesChanged ? .values : .none
-        }
-
-        enum ChangeKind: Equatable {
-            case none, values, structural
-        }
-
-        /// Mirrors external `store.selectedTorrentIDs` changes into the table,
+        /// Mirrors external `store.list.selectedTorrentIDs` changes into the table,
         /// including after structural reloads. Compares before writing so the
         /// delegate → binding → updateNSView round-trip settles instead of looping.
         func syncSelectionFromBinding() {
@@ -277,18 +263,13 @@ struct TorrentTableRepresentable: NSViewRepresentable {
         // MARK: - Row context menu & interaction
 
         /// Clicked rows ∪ selection, matching the old SwiftUI context-menu
-        /// semantics; blank-area right-click acts on the selection.
+        /// semantics; blank-area right-click acts on the selection. The rule
+        /// lives in `TorrentTableSelection` so it is testable headlessly.
         private func affectedIDs(forRows rows: IndexSet) -> Set<Torrent.ID> {
-            let selection = selectionBinding.wrappedValue
-            let rowIDs = Set(
-                rows.compactMap { row in
-                    displayedRows.indices.contains(row) ? displayedRows[row].id : nil
-                })
-            if rows.isEmpty { return selection }
-            let clickInsideSelection = rows.allSatisfy { row in
-                displayedRows.indices.contains(row) && selection.contains(displayedRows[row].id)
-            }
-            return clickInsideSelection ? selection : rowIDs
+            TorrentTableSelection.affectedIDs(
+                rows: rows,
+                displayedRows: displayedRows,
+                selection: selectionBinding.wrappedValue)
         }
 
         @objc func doubleClicked(_ sender: Any?) {
@@ -328,6 +309,8 @@ struct TorrentTableRepresentable: NSViewRepresentable {
         private static let editLabelsItemTag = 2
         private static let openMappingItemTag = 3
         private static let setLocationItemTag = 4
+        private static let hideColumnItemTag = 5
+        private static let renameItemTag = 6
 
         /// Title + SF-symbol glyph for a torrent-priority context-menu item.
         /// Mirrors the priority column's glyphs (TorrentPriority.systemImage).
@@ -337,9 +320,17 @@ struct TorrentTableRepresentable: NSViewRepresentable {
 
         private func populateRowMenu(_ menu: NSMenu, ids: [Torrent.ID]) {
             menu.removeAllItems()
-            let canAct = actionsEnabled && !ids.isEmpty
+            let priorities = ids.compactMap { id in
+                displayedRows.first { $0.id == id }?.torrent.priority
+            }
+            let specs = TorrentRowMenu.items(
+                ids: ids,
+                priorities: priorities,
+                actionsEnabled: actionsEnabled,
+                labelsSupported: labelsSupported,
+                mappings: mappings)
             let payload = { action in MenuPayload(action: action, ids: ids) }
-            let item = { (title: String, symbol: String, action: TorrentRowAction) in
+            let actionItem = { (title: String, symbol: String, action: TorrentRowAction) in
                 let item = NSMenuItem(
                     title: title,
                     action: #selector(TorrentTableRepresentable.Coordinator.contextMenuItemClicked(_:)),
@@ -349,15 +340,17 @@ struct TorrentTableRepresentable: NSViewRepresentable {
                 item.representedObject = payload(action)
                 return item
             }
-            let destructiveItem = { (title: String, symbol: String, action: TorrentRowAction) in
+            let destructiveItem = {
+                (title: String, symbol: String, action: TorrentRowAction, enabled: Bool) in
                 let item = DestructiveMenuItem(
                     title: title,
-                    baseColor: canAct ? .systemRed : .secondaryLabelColor)
+                    baseColor: enabled ? .systemRed : .secondaryLabelColor)
                 item.action = #selector(TorrentTableRepresentable.Coordinator.contextMenuItemClicked(_:))
                 item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
                 item.target = self
                 item.representedObject = payload(action)
                 item.tag = Self.destructiveItemTag
+                item.isEnabled = enabled
                 return item
             }
             let openItem = { (mapping: OpenMapping) in
@@ -378,61 +371,82 @@ struct TorrentTableRepresentable: NSViewRepresentable {
                 item.tag = Self.openMappingItemTag
                 return item
             }
-            // Priority submenu. Checks the option matching the affected torrents
-            // when they all share one priority; nothing is checked on a mixed
-            // selection.
-            let prioritySubmenu = NSMenu()
-            let affectedPriorities = ids.compactMap { id in
-                displayedRows.first { $0.id == id }?.torrent.priority
-            }
-            let uniformPriority = Set(affectedPriorities).count == 1 ? affectedPriorities.first : nil
-            for priority in TorrentPriority.allCases {
-                let (title, symbol) = Self.priorityMenuItemContent(priority)
-                let priorityItem = item(title, symbol, .setPriority(priority))
-                priorityItem.state = priority == uniformPriority ? .on : .off
-                prioritySubmenu.addItem(priorityItem)
-            }
-            let priorityMenuItem = NSMenuItem(title: "Priority", action: nil, keyEquivalent: "")
-            priorityMenuItem.image = NSImage(
-                systemSymbolName: "arrow.up.arrow.down", accessibilityDescription: "Priority")
-            priorityMenuItem.submenu = prioritySubmenu
-            priorityMenuItem.isEnabled = canAct
 
             menu.autoenablesItems = false
-            menu.addItem(item("Resume", "play.fill", .resume))
-            menu.addItem(item("Pause", "pause.fill", .pause))
-            menu.addItem(priorityMenuItem)
-            menu.addItem(.separator())
-            menu.addItem(item("Verify Local Data", "checkmark.shield", .verify))
-            menu.addItem(item("Update Tracker", "megaphone", .reannounce))
-            menu.addItem(.separator())
-            if !mappings.isEmpty {
-                for mapping in mappings {
-                    menu.addItem(openItem(mapping))
+            var index = 0
+            while index < specs.count {
+                let spec = specs[index]
+                switch spec.kind {
+                case .priority:
+                    // A run of consecutive priority entries becomes one submenu.
+                    let submenu = NSMenu()
+                    while index < specs.count {
+                        guard case .priority(let priority) = specs[index].kind else { break }
+                        let prioritySpec = specs[index]
+                        let (title, symbol) = Self.priorityMenuItemContent(priority)
+                        let priorityItem = actionItem(title, symbol, .setPriority(priority))
+                        priorityItem.state = prioritySpec.isChecked ? .on : .off
+                        priorityItem.isEnabled = prioritySpec.isEnabled
+                        submenu.addItem(priorityItem)
+                        index += 1
+                    }
+                    let container = NSMenuItem(title: "Priority", action: nil, keyEquivalent: "")
+                    container.image = NSImage(
+                        systemSymbolName: "arrow.up.arrow.down",
+                        accessibilityDescription: "Priority")
+                    container.submenu = submenu
+                    // Every priority entry shares one enablement, so the first
+                    // is representative of the whole submenu.
+                    container.isEnabled = submenu.items.first?.isEnabled ?? false
+                    menu.addItem(container)
+                    continue
+                case .resume:
+                    let item = actionItem("Resume", "play.fill", .resume)
+                    item.isEnabled = spec.isEnabled
+                    menu.addItem(item)
+                case .pause:
+                    let item = actionItem("Pause", "pause.fill", .pause)
+                    item.isEnabled = spec.isEnabled
+                    menu.addItem(item)
+                case .separator:
+                    menu.addItem(.separator())
+                case .verify:
+                    let item = actionItem("Verify Local Data", "checkmark.shield", .verify)
+                    item.isEnabled = spec.isEnabled
+                    menu.addItem(item)
+                case .reannounce:
+                    let item = actionItem("Update Tracker", "megaphone", .reannounce)
+                    item.isEnabled = spec.isEnabled
+                    menu.addItem(item)
+                case .mapping(let mapping):
+                    let item = openItem(mapping)
+                    item.isEnabled = spec.isEnabled
+                    menu.addItem(item)
+                case .editLabels:
+                    let item = actionItem("Edit Labels…", "tag", .editLabels)
+                    item.tag = Self.editLabelsItemTag
+                    item.isEnabled = spec.isEnabled
+                    menu.addItem(item)
+                case .setLocation:
+                    let item = actionItem("Set Location…", "folder", .setLocation)
+                    item.tag = Self.setLocationItemTag
+                    item.isEnabled = spec.isEnabled
+                    menu.addItem(item)
+                case .rename:
+                    let item = actionItem("Rename…", "pencil", .rename)
+                    item.tag = Self.renameItemTag
+                    item.isEnabled = spec.isEnabled
+                    menu.addItem(item)
+                case .remove:
+                    menu.addItem(
+                        destructiveItem("Remove\u{2026}", "trash", .remove, spec.isEnabled))
+                case .removeAndDeleteData:
+                    menu.addItem(
+                        destructiveItem(
+                            "Remove and Delete Data\u{2026}", "trash.fill", .removeAndDeleteData,
+                            spec.isEnabled))
                 }
-                menu.addItem(.separator())
-            }
-            let editLabelsItem = item("Edit Labels…", "tag", .editLabels)
-            editLabelsItem.tag = Self.editLabelsItemTag
-            menu.addItem(editLabelsItem)
-            let setLocationItem = item("Set Location…", "folder", .setLocation)
-            setLocationItem.tag = Self.setLocationItemTag
-            menu.addItem(setLocationItem)
-            menu.addItem(.separator())
-            menu.addItem(destructiveItem("Remove\u{2026}", "trash", .remove))
-            menu.addItem(
-                destructiveItem("Remove and Delete Data\u{2026}", "trash.fill", .removeAndDeleteData))
-            for menuItem in menu.items where menuItem.action != nil {
-                switch menuItem.tag {
-                case Self.editLabelsItemTag:
-                    menuItem.isEnabled = canAct && labelsSupported
-                case Self.openMappingItemTag:
-                    menuItem.isEnabled = actionsEnabled && ids.count == 1
-                case Self.setLocationItemTag:
-                    menuItem.isEnabled = canAct
-                default:
-                    menuItem.isEnabled = canAct
-                }
+                index += 1
             }
         }
 
@@ -476,28 +490,160 @@ struct TorrentTableRepresentable: NSViewRepresentable {
             return column
         }
 
+        /// Builds the grouped header visibility menu: one submenu per column
+        /// group, each item toggling its column's isHidden, plus a trailing
+        /// hide/reset section. States refresh in `menuNeedsUpdate` just before
+        /// the menu pops.
+        func makeHeaderMenu() -> NSMenu {
+            let menu = NSMenu()
+            menu.delegate = self
+            for group in TorrentTableColumnGroup.allCases {
+                let submenu = NSMenu()
+                for spec in TorrentTableColumns.all where spec.group == group {
+                    let item = NSMenuItem(
+                        title: spec.title,
+                        action: #selector(TorrentTableRepresentable.Coordinator.toggleColumnVisibility(_:)),
+                        keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = spec.column.rawValue
+                    submenu.addItem(item)
+                }
+                let groupItem = NSMenuItem(title: group.rawValue, action: nil, keyEquivalent: "")
+                groupItem.submenu = submenu
+                menu.addItem(groupItem)
+            }
+            menu.addItem(.separator())
+            let hideItem = NSMenuItem(
+                title: "Hide This Column",
+                action: #selector(TorrentTableRepresentable.Coordinator.hideClickedColumn(_:)),
+                keyEquivalent: "")
+            hideItem.target = self
+            hideItem.tag = Self.hideColumnItemTag
+            menu.addItem(hideItem)
+            let resetItem = NSMenuItem(
+                title: "Reset Columns",
+                action: #selector(TorrentTableRepresentable.Coordinator.resetColumnsToDefaults(_:)),
+                keyEquivalent: "")
+            resetItem.target = self
+            menu.addItem(resetItem)
+            return menu
+        }
+
+        @objc func toggleColumnVisibility(_ sender: NSMenuItem) {
+            guard let tableView,
+                let rawValue = sender.representedObject as? String
+            else { return }
+            let identifier = NSUserInterfaceItemIdentifier(rawValue)
+            guard let column = tableView.tableColumns.first(where: { $0.identifier == identifier }) else { return }
+            // Never hide the last visible column — an empty table gives no
+            // header to right-click back from.
+            let visibleCount = tableView.tableColumns.count(where: { !$0.isHidden })
+            if !column.isHidden, visibleCount <= 1 { return }
+            column.isHidden.toggle()
+        }
+
+        /// Hides the header cell the menu was invoked from (`clickedColumn` is
+        /// valid in `menuNeedsUpdate`, where the target is captured).
+        @objc func hideClickedColumn(_ sender: NSMenuItem) {
+            guard let tableView,
+                let rawValue = sender.representedObject as? String
+            else { return }
+            let identifier = NSUserInterfaceItemIdentifier(rawValue)
+            guard let column = tableView.tableColumns.first(where: { $0.identifier == identifier }),
+                !column.isHidden
+            else { return }
+            let visibleCount = tableView.tableColumns.count(where: { !$0.isHidden })
+            if visibleCount <= 1 { return }
+            column.isHidden = true
+        }
+
+        /// Restores the spec defaults: visibility, widths, and column order.
+        /// Autosave persists the restored state, so it survives relaunches.
+        /// Sort order is untouched — that lives in the store, not the table.
+        @objc func resetColumnsToDefaults(_ sender: NSMenuItem) {
+            guard let tableView else { return }
+            for (index, spec) in TorrentTableColumns.all.enumerated() {
+                guard
+                    let column = tableView.tableColumns.first(where: {
+                        $0.identifier == spec.identifier
+                    })
+                else { continue }
+                column.isHidden = spec.hiddenByDefault
+                column.width = spec.idealWidth
+                let currentIndex = tableView.column(withIdentifier: spec.identifier)
+                if currentIndex != -1, currentIndex != index {
+                    tableView.moveColumn(currentIndex, toColumn: index)
+                }
+            }
+        }
+
+        /// Refreshes each header-menu item's checkmark from its column's
+        /// isHidden, disabling the sole visible column so it can't be hidden.
+        /// Also retargets the "Hide …" item at the right-clicked column.
+        func refreshHeaderMenu() {
+            guard let menu = headerMenu, let tableView else { return }
+            let visibleCount = tableView.tableColumns.count(where: { !$0.isHidden })
+            for groupItem in menu.items {
+                guard let submenu = groupItem.submenu else { continue }
+                for item in submenu.items {
+                    guard let rawValue = item.representedObject as? String else { continue }
+                    let identifier = NSUserInterfaceItemIdentifier(rawValue)
+                    guard let column = tableView.tableColumns.first(where: { $0.identifier == identifier })
+                    else { continue }
+                    item.state = column.isHidden ? .off : .on
+                    item.isEnabled = column.isHidden || visibleCount > 1
+                }
+            }
+            guard let hideItem = menu.items.first(where: { $0.tag == Self.hideColumnItemTag }) else { return }
+            guard let index = invokedHeaderColumnIndex(in: tableView) else {
+                hideItem.title = "Hide This Column"
+                hideItem.representedObject = nil
+                hideItem.isEnabled = false
+                return
+            }
+            let column = tableView.tableColumns[index]
+            let title =
+                TorrentTableColumns.all.first(where: { $0.identifier == column.identifier })?.title
+                ?? column.identifier.rawValue
+            hideItem.title = "Hide “\(title)”"
+            hideItem.representedObject = column.identifier.rawValue
+            hideItem.isEnabled = !column.isHidden && visibleCount > 1
+        }
+
+        /// Index of the header column the visibility menu was invoked from.
+        /// Hit-tests the current right-click in the header: `clickedColumn` is
+        /// only updated for row clicks, so it stays -1 here and the Hide item
+        /// would never arm. Falls back to `clickedColumn` for keyboard-invoked
+        /// menus, where there is no mouse event.
+        func invokedHeaderColumnIndex(in tableView: NSTableView) -> Int? {
+            if let headerView = tableView.headerView, let event = NSApp.currentEvent {
+                let point = headerView.convert(event.locationInWindow, from: nil)
+                if headerView.bounds.contains(point) {
+                    let column = headerView.column(at: point)
+                    if column >= 0, tableView.tableColumns.indices.contains(column) {
+                        return column
+                    }
+                }
+            }
+            let clicked = tableView.clickedColumn
+            if clicked >= 0, tableView.tableColumns.indices.contains(clicked) { return clicked }
+            return nil
+        }
+
         private func restoreSelection() {
             guard let tableView else { return }
             let selection = selectionBinding.wrappedValue
-            let tableSel = selectedRowIDs(in: tableView)
+            let tableSel = TorrentTableSelection.ids(
+                at: tableView.selectedRowIndexes, displayedRows: displayedRows)
             guard selection != tableSel else { return }
-            let indexes = IndexSet(
-                displayedRows.enumerated().compactMap { row, torrent in
-                    selection.contains(torrent.id) ? row : nil
-                })
+            let indexes = TorrentTableSelection.rowIndexes(
+                for: selection, displayedRows: displayedRows)
             // Guard the echo: selectRowIndexes posts tableViewSelectionDidChange
             // synchronously; without this flag the write-back loop (or a stale
             // table's empty write) could clobber the store's selection.
             isRestoringSelection = true
             tableView.selectRowIndexes(indexes, byExtendingSelection: false)
             isRestoringSelection = false
-        }
-
-        private func selectedRowIDs(in tableView: NSTableView) -> Set<Torrent.ID> {
-            Set(
-                tableView.selectedRowIndexes.compactMap { row in
-                    displayedRows.indices.contains(row) ? displayedRows[row].id : nil
-                })
         }
 
         private func refreshVisibleCells(in tableView: NSTableView) {
@@ -562,10 +708,8 @@ extension TorrentTableRepresentable.Coordinator: NSTableViewDelegate {
         // Ignore changes caused by our own programmatic selection (restore
         // after reload) so the write-back can't clobber the store.
         guard !isRestoringSelection else { return }
-        let ids = Set(
-            tableView.selectedRowIndexes.compactMap { row in
-                displayedRows.indices.contains(row) ? displayedRows[row].id : nil
-            })
+        let ids = TorrentTableSelection.ids(
+            at: tableView.selectedRowIndexes, displayedRows: displayedRows)
         guard ids != selectionBinding.wrappedValue else { return }
         selectionBinding.wrappedValue = ids
     }
@@ -574,22 +718,22 @@ extension TorrentTableRepresentable.Coordinator: NSTableViewDelegate {
         // Snapshot replay is read-only: still render the persisted sort
         // indicator, but don't forward a user sort attempt to the store, where
         // it would persist `tablePreferences` to the real UserDefaults.
-        guard actionsEnabled else { return }
-        // AppKit promotes the clicked column to PRIMARY of its descriptor list,
-        // keeping older entries as secondaries. We are a single-sort table:
-        // take the primary, collapse the list to just it, and forward it.
-        // (.last here was the original bug — it is the oldest secondary.)
-        guard !isNormalizingSortDescriptors else { return }
-        guard let descriptor = tableView.sortDescriptors.first else { return }
-        if tableView.sortDescriptors.count > 1 {
+        guard actionsEnabled, !isNormalizingSortDescriptors else { return }
+        // AppKit promotes the clicked column to PRIMARY, keeping older entries
+        // as secondaries. This is a single-sort table: collapse to the primary
+        // before resolving it (the `.last` of that list was the original bug —
+        // it is the oldest secondary).
+        if tableView.sortDescriptors.count > 1,
+            let primary = tableView.sortDescriptors.first
+        {
             isNormalizingSortDescriptors = true
-            tableView.sortDescriptors = [descriptor]
+            tableView.sortDescriptors = [primary]
             isNormalizingSortDescriptors = false
         }
-        guard let key = descriptor.key,
-            let column = TransmissionCore.TableColumn(rawValue: key)
-        else { return }
-        onSortChange?(column, descriptor.ascending)
+        guard let normalized = TorrentTableSort.normalize(tableView.sortDescriptors) else {
+            return
+        }
+        onSortChange?(normalized.column, normalized.ascending)
     }
 
     func tableView(_ tableView: NSTableView, userCanChangeVisibilityOf column: NSTableColumn) -> Bool {
@@ -603,6 +747,8 @@ extension TorrentTableRepresentable.Coordinator: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === rowMenu {
             rebuildRowMenu()
+        } else if menu === headerMenu {
+            refreshHeaderMenu()
         }
     }
 
@@ -649,8 +795,16 @@ private final class DestructiveMenuItem: NSMenuItem {
         applyHighlight(highlighted: false)
     }
 
+    // NSMenuItem's designated inits are nonisolated; under the target's MainActor
+    // default, these overrides (one otherwise synthesized as an ObjC stub) would
+    // be main-actor and fail Swift 6's isolation-matching rule.
     @available(*, unavailable)
-    required init(coder: NSCoder) {
+    nonisolated override init(title: String, action: Selector?, keyEquivalent: String) {
+        fatalError("init(title:action:keyEquivalent:) has not been implemented")
+    }
+
+    @available(*, unavailable)
+    nonisolated required init(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 

@@ -69,21 +69,16 @@ struct SnapshotTorrentServiceTests {
         #expect(emissions[0].count == 2)
     }
 
-    @Test("is read-only: actions disabled and mutations throw")
+    @Test("is read-only: conforms to TorrentReading only, not TorrentMutating")
     func isReadOnly() async throws {
         let url = try writeFixture()
         defer { try? FileManager.default.removeItem(at: url) }
 
         let service = try SnapshotTorrentService(fileURL: url)
-        #expect(!service.supportsActions)
-        await #expect(throws: SnapshotError.self) {
-            try await service.stop([1])
-        }
-        await #expect(throws: SnapshotError.self) {
-            try await service.add(
-                fileURL: nil, magnetURL: nil, destination: "/x", labels: [],
-                priority: .normal, startWhenAdded: true)
-        }
+        // Erase to the reading existential so the check is a dynamic one: the
+        // read-only replay must not be downcastable to the mutation capability.
+        let reading: any TorrentReading = service
+        #expect(!(reading is any TorrentMutating))
     }
 
     @Test("inspectorData returns the fully-populated torrent")
@@ -119,6 +114,26 @@ struct SnapshotTorrentServiceTests {
         #expect(throws: SnapshotError.unsupportedVersion(snapshotFormatVersion + 1)) {
             try SnapshotTorrentService(fileURL: url)
         }
+    }
+
+    @Test("exposes the server name the snapshot should replay as")
+    func exposesServerName() throws {
+        var file = SnapshotFixtures.rawSnapshot()
+        file.source.serverName = "My remote server"
+        let url = try writeFixture(file)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let service = try SnapshotTorrentService(fileURL: url)
+        #expect(service.displayServerName == "My remote server")
+    }
+
+    @Test("has no server name when the file carries none")
+    func noServerNameWhenAbsent() throws {
+        let url = try writeFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let service = try SnapshotTorrentService(fileURL: url)
+        #expect(service.displayServerName == nil)
     }
 
     @Test("exposes the captured tag colours for seeding the replay store")

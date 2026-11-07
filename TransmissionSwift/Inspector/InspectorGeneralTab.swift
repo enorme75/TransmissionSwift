@@ -1,5 +1,6 @@
 import SwiftUI
 import TransmissionCore
+import TransmissionTestSupport
 
 /// Key-value overview of the selected torrent: transfer state up top, then
 /// immutable torrent metadata, then location/labels/priority.
@@ -52,7 +53,7 @@ struct InspectorGeneralTab: View {
                 row("Download", ColumnFormatters.humanizedSpeed(torrent.downloadSpeed))
                 row("Upload", ColumnFormatters.humanizedSpeed(torrent.uploadSpeed))
                 row("Time left", ColumnFormatters.humanizedETA(torrent.eta, status: torrent.status))
-                row("Ratio", torrent.ratio.formatted(.number.precision(.fractionLength(2))))
+                row("Ratio", ColumnFormatters.ratio(torrent.ratio))
                 row("Peers", peersSummary)
                 row("Downloaded", ColumnFormatters.humanizedSize(torrent.downloadedEver))
                 row("Uploaded", ColumnFormatters.humanizedSize(torrent.uploadedEver))
@@ -141,8 +142,8 @@ struct InspectorGeneralTab: View {
     /// Shown relative to the daemon's default download dir when nested inside
     /// it, otherwise the full path (e.g. a folder outside the download root).
     private var locationDisplay: String {
-        let relative = relativeDownloadFolder(torrent.downloadFolder, relativeTo: store.downloadDirectory)
-        if relative.isEmpty { return store.downloadDirectory ?? torrent.downloadFolder }
+        let relative = relativeDownloadFolder(torrent.downloadFolder, relativeTo: store.list.downloadDirectory)
+        if relative.isEmpty { return store.list.downloadDirectory ?? torrent.downloadFolder }
         return relative
     }
 
@@ -235,7 +236,7 @@ struct InspectorGeneralTab: View {
                         labelChip(label)
                     }
                 }
-                if store.actionsEnabled && store.supportsLabels {
+                if store.actionsEnabled && store.session.supportsLabels {
                     Spacer()
                     Button("Edit…") {
                         store.openEditLabels(for: [torrent.id])
@@ -277,7 +278,7 @@ struct InspectorGeneralTab: View {
             get: { torrent.priority },
             set: { newPriority in
                 guard newPriority != torrent.priority else { return }
-                Task { await store.setPriority([torrent.id], priority: newPriority) }
+                Task { await store.actions.setPriority([torrent.id], priority: newPriority) }
             }
         )
     }

@@ -38,7 +38,7 @@ struct NetworkPrefsPane: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                     Toggle("Enable blocklist", isOn: boolBinding(\.blocklistEnabled))
-                    if store.effectiveSessionSettings.blocklistEnabled {
+                    if store.session.effectiveSessionSettings.blocklistEnabled {
                         TextField("Blocklist URL", text: stringBinding(\.blocklistURL))
                             .font(.monospaced(.body)())
                     }
@@ -54,32 +54,6 @@ struct NetworkPrefsPane: View {
                 } header: {
                     Text("Protocol")
                 }
-
-                Section {
-                    Toggle("Limit simultaneous downloads", isOn: boolBinding(\.downloadQueueEnabled))
-                    if store.effectiveSessionSettings.downloadQueueEnabled {
-                        queueSizeRow(label: "Download queue", keyPath: \.downloadQueueSize)
-                    }
-                    Toggle("Limit simultaneous seeds", isOn: boolBinding(\.seedQueueEnabled))
-                    if store.effectiveSessionSettings.seedQueueEnabled {
-                        queueSizeRow(label: "Seed queue", keyPath: \.seedQueueSize)
-                    }
-                    Toggle("Treat idle torrents as stalled", isOn: boolBinding(\.queueStalledEnabled))
-                    if store.effectiveSessionSettings.queueStalledEnabled {
-                        LabeledContent("Stalled after") {
-                            HStack(spacing: 4) {
-                                TextField("", value: intBinding(\.queueStalledMinutes), format: .number)
-                                    .frame(width: 60)
-                                    .multilineTextAlignment(.trailing)
-                                Text("min").foregroundStyle(.secondary)
-                                Stepper("", value: intBinding(\.queueStalledMinutes), in: 1...1440, step: 5)
-                                    .labelsHidden()
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Queue")
-                }
             }
             .formStyle(.grouped)
         } else {
@@ -89,7 +63,7 @@ struct NetworkPrefsPane: View {
 
     private var portStatusRow: some View {
         HStack {
-            switch store.portIsOpen {
+            switch store.session.portIsOpen {
             case .some(true):
                 Label("Open", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
@@ -101,7 +75,7 @@ struct NetworkPrefsPane: View {
                     .foregroundStyle(.secondary)
             }
             Button {
-                Task { await store.testPort() }
+                Task { await store.session.testPort() }
             } label: {
                 Label("Test", systemImage: "arrow.clockwise")
                     .labelStyle(.titleAndIcon)
@@ -110,21 +84,11 @@ struct NetworkPrefsPane: View {
         }
     }
 
-    private func queueSizeRow(label: String, keyPath: WritableKeyPath<SessionSettings, Int>) -> some View {
-        LabeledContent(label) {
-            HStack(spacing: 4) {
-                TextField("", value: intBinding(keyPath), format: .number)
-                    .frame(width: 60)
-                    .multilineTextAlignment(.trailing)
-                Stepper("", value: intBinding(keyPath), in: 1...100, step: 1)
-                    .labelsHidden()
-            }
-        }
-    }
-
     private var encryptionBinding: Binding<EncryptionChoice> {
         Binding(
-            get: { EncryptionChoice(rawValue: store.effectiveSessionSettings.encryption.rawValue) ?? .preferred },
+            get: {
+                EncryptionChoice(rawValue: store.session.effectiveSessionSettings.encryption.rawValue) ?? .preferred
+            },
             set: { choice in
                 let value: SessionEncryption
                 switch choice {
@@ -132,21 +96,21 @@ struct NetworkPrefsPane: View {
                 case .preferred: value = .preferred
                 case .tolerated: value = .tolerated
                 }
-                Task { await store.updateSessionSettings { $0.encryption = value } }
+                Task { await store.session.updateSessionSettings { $0.encryption = value } }
             }
         )
     }
 
     private func boolBinding(_ keyPath: WritableKeyPath<SessionSettings, Bool>) -> Binding<Bool> {
-        store.binding(keyPath: keyPath)
+        store.session.binding(keyPath: keyPath)
     }
 
     private func intBinding(_ keyPath: WritableKeyPath<SessionSettings, Int>) -> Binding<Int> {
-        store.binding(keyPath: keyPath)
+        store.session.binding(keyPath: keyPath)
     }
 
     private func stringBinding(_ keyPath: WritableKeyPath<SessionSettings, String>) -> Binding<String> {
-        store.binding(keyPath: keyPath)
+        store.session.binding(keyPath: keyPath)
     }
 }
 
