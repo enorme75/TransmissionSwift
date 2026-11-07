@@ -4,6 +4,8 @@ Native SwiftUI macOS remote control for the Transmission BitTorrent daemon (nati
 
 **Read `ARCHITECTURE.md` first** — durable architectural decisions. If anything here contradicts it, `ARCHITECTURE.md` wins; propose updating this file.
 
+This is a fork: read `doc/fork-status.md` to know the upstream-sync strategy, what this fork carries on top, and the open follow-ups.
+
 ## Build, test, run
 
 Use `just <recipe>`; `just --list` shows all. The justfile wraps the common commands, including the Xcode `DEVELOPER_DIR` that package tests need (the CLT `swift` lacks the `Testing` module). Key recipes: `build`, `test` (packages + app), `test-packages` (fast: RPC + Core), `test-snapshot` (daemon-free UI test), `daemon`, `format`, `lint`.
