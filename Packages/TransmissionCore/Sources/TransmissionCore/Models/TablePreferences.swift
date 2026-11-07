@@ -65,7 +65,7 @@ public struct NilLastDateComparator: SortComparator {
             return .orderedDescending
         case (_?, nil):
             return .orderedAscending
-        case let (l?, r?):
+        case (let l?, let r?):
             let forward = l.compare(r)
             guard order == .forward else {
                 return forward == .orderedAscending
