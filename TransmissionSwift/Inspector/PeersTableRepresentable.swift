@@ -404,8 +404,11 @@ final class PeerTableCellView: NSTableCellView {
     }
 
     func configure(content: PeerCellContent) {
-        if accessibilityLabel() != content.text {
-            setAccessibilityLabel(content.text)
+        // VoiceOver reads the ISO code rather than the flag glyph.
+        let axLabel =
+            content.country.map { "\($0), \(content.text)" } ?? content.text
+        if accessibilityLabel() != axLabel {
+            setAccessibilityLabel(axLabel)
         }
         guard content != self.content else { return }
         self.content = content
@@ -436,7 +439,7 @@ final class PeerTableCellView: NSTableCellView {
             label = field
         }
 
-        countryChip?.text = content.country ?? ""
+        countryChip?.text = content.country.flatMap { countryFlagEmoji(for: $0) ?? $0 } ?? ""
         stack.spacing = hasChip ? 6 : 0
         label?.stringValue = content.text
         label?.font = content.font
@@ -471,6 +474,15 @@ final class PeerCountryChipView: NSView {
     var text: String = "" {
         didSet {
             if textLabel.stringValue != text { textLabel.stringValue = text }
+            // A flag emoji carries its own metrics; a letter code needs the
+            // compact stroked look.
+            let isEmoji = text.unicodeScalars.contains {
+                (0x1F1E6...0x1F1FF).contains($0.value)
+            }
+            textLabel.font =
+                isEmoji
+                ? .systemFont(ofSize: 13, weight: .regular)
+                : .systemFont(ofSize: 10, weight: .semibold)
             invalidateIntrinsicContentSize()
         }
     }
