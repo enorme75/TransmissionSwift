@@ -19,7 +19,10 @@ public final class InspectorModel {
     /// Nil when no torrent is selected or before the first fetch. Not wiped by
     /// the list poll — updated only by `fetch(for:)`.
     public private(set) var detail: Torrent?
-    public var isVisible: Bool = true {
+    /// Open by default only after the user opened it once; a fresh install
+    /// (no stored preference) starts with the inspector collapsed so the
+    /// torrent list owns the window.
+    public var isVisible: Bool = false {
         didSet {
             if oldValue != isVisible {
                 defaults.set(isVisible, forKey: PreferenceKeys.inspectorVisible)

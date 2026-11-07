@@ -132,7 +132,7 @@ extension TorrentCellContent {
                 toolTip: nil,
                 accessibilityLabel: text)
         case .addedAt:
-            let text = ColumnFormatters.relativeDate(row.torrent.addedAt)
+            let text = ColumnFormatters.cellDate(row.torrent.addedAt)
             return TorrentCellContent(
                 shape: .text,
                 text: text,
@@ -396,7 +396,7 @@ extension TorrentCellContent {
                 toolTip: nil,
                 accessibilityLabel: "never")
         }
-        let text = ColumnFormatters.relativeDate(date)
+        let text = ColumnFormatters.cellDateTime(date)
         return TorrentCellContent(
             shape: .text,
             text: text,

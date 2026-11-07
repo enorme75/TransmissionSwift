@@ -102,6 +102,8 @@ struct InspectorModelTests {
         model.connect(reading: reader)
         let id = MockFixtures.torrents()[0].id
         list.selectedTorrentIDs = [id]
+        // The poll gate is visible-only, and a fresh install starts collapsed.
+        model.isVisible = true
 
         await model.poll()
         #expect(model.detail == nil)

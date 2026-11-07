@@ -83,6 +83,29 @@ nonisolated enum ColumnFormatters {
         date.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated))
     }
 
+    /// Fixed formats for the date columns: a relative render ("5 yr. ago")
+    /// hides the actual date, and a table reads better without it. en_GB
+    /// templates are numeric and day-first, matching the historical dd/MM look.
+    static func cellDate(_ date: Date) -> String {
+        date.formatted(
+            .dateTime
+                .day(.twoDigits)
+                .month(.twoDigits)
+                .year(.defaultDigits)
+                .locale(Locale(identifier: "en_GB")))
+    }
+
+    static func cellDateTime(_ date: Date) -> String {
+        date.formatted(
+            .dateTime
+                .day(.twoDigits)
+                .month(.twoDigits)
+                .year(.defaultDigits)
+                .hour(.twoDigits(amPM: .omitted))
+                .minute(.twoDigits)
+                .locale(Locale(identifier: "en_GB")))
+    }
+
     static func queuePosition(_ position: Int?) -> String {
         position.map { "#\($0)" } ?? "\u{2014}"
     }
