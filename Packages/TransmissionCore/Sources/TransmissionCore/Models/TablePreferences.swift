@@ -42,8 +42,42 @@ public enum TableColumn: String, CaseIterable, Identifiable, Hashable, Sendable,
     // target's `TorrentTableColumns` — the single source of truth for the table.
 }
 
+/// Sorts by an optional date, placing torrents without the date last in both
+/// sort directions. A `KeyPathComparator` over a fallback date (`.distantFuture`)
+/// cannot express that: the fallback is the "newest" value, so it lands on top
+/// of the descending sort a header click produces.
+public struct NilLastDateComparator: SortComparator {
+    public typealias Compared = Torrent
+
+    public var order: SortOrder = .forward
+    private let date: KeyPath<Torrent, Date?>
+
+    public init(_ date: KeyPath<Torrent, Date?>, order: SortOrder) {
+        self.date = date
+        self.order = order
+    }
+
+    public func compare(_ lhs: Torrent, _ rhs: Torrent) -> ComparisonResult {
+        switch (lhs[keyPath: date], rhs[keyPath: date]) {
+        case (nil, nil):
+            return .orderedSame
+        case (nil, _?):
+            return .orderedDescending
+        case (_?, nil):
+            return .orderedAscending
+        case let (l?, r?):
+            let forward = l.compare(r)
+            guard order == .forward else {
+                return forward == .orderedAscending
+                    ? .orderedDescending : (forward == .orderedDescending ? .orderedAscending : .orderedSame)
+            }
+            return forward
+        }
+    }
+}
+
 extension TableColumn {
-    public func comparator(order: SortOrder) -> KeyPathComparator<Torrent> {
+    public func comparator(order: SortOrder) -> any SortComparator<Torrent> {
         switch self {
         case .name: return KeyPathComparator(\Torrent.name, order: order)
         case .size: return KeyPathComparator(\Torrent.size, order: order)
@@ -53,9 +87,9 @@ extension TableColumn {
         case .eta: return KeyPathComparator(\Torrent.etaSortKey, order: order)
         case .ratio: return KeyPathComparator(\Torrent.ratio, order: order)
         case .addedAt: return KeyPathComparator(\Torrent.addedAt, order: order)
-        case .completedAt: return KeyPathComparator(\Torrent.completedAtSortKey, order: order)
-        case .startedAt: return KeyPathComparator(\Torrent.startedAtSortKey, order: order)
-        case .lastActivityAt: return KeyPathComparator(\Torrent.lastActivityAtSortKey, order: order)
+        case .completedAt: return NilLastDateComparator(\Torrent.completedAt, order: order)
+        case .startedAt: return NilLastDateComparator(\Torrent.startedAt, order: order)
+        case .lastActivityAt: return NilLastDateComparator(\Torrent.lastActivityAt, order: order)
         case .primaryTracker: return KeyPathComparator(\Torrent.primaryTracker, order: order)
         case .connectedPeers: return KeyPathComparator(\Torrent.connectedPeerCount, order: order)
         case .availablePeers: return KeyPathComparator(\Torrent.availablePeerCount, order: order)

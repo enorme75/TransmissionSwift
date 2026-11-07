@@ -130,4 +130,26 @@ struct TableColumnSortTests {
         let comparator = TableColumn.queuePosition.comparator(order: .forward)
         #expect(comparator.compare(low(), missing) == .orderedAscending)
     }
+
+    @Test("a missing optional date sorts to the bottom in both directions")
+    func missingDatesSortLastInBothDirections() {
+        let datedColumns: [TableColumn] = [.completedAt, .startedAt, .lastActivityAt]
+        var missing = low()
+        missing.completedAt = nil
+        missing.startedAt = nil
+        missing.lastActivityAt = nil
+
+        for column in datedColumns {
+            let forward = column.comparator(order: .forward)
+            let reverse = column.comparator(order: .reverse)
+            #expect(
+                forward.compare(low(), missing) == .orderedAscending,
+                "\(column.rawValue) forward put the undated torrent on top")
+            #expect(
+                reverse.compare(low(), missing) == .orderedAscending,
+                "\(column.rawValue) reverse put the undated torrent on top")
+            #expect(
+                forward.compare(missing, missing) == .orderedSame)
+        }
+    }
 }
